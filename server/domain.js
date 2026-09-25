@@ -42,11 +42,15 @@ export const itemSchema = z.object({
       "Rent",
       "Electricity",
       "Maintenance",
-      "Corporation tax",
+      "Corporation tax", // Legacy saved schedules and invoices remain compatible.
+      "Municipal Property Tax",
       "Water",
       "Other",
     ])
-    .default("Rent"),
+    .default("Rent")
+    .transform((value) =>
+      value === "Corporation tax" ? "Municipal Property Tax" : value,
+    ),
   quantity: z
     .union([z.string(), z.number()])
     .transform(String)

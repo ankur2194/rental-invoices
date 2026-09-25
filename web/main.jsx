@@ -6,7 +6,7 @@ const categories = [
   "Rent",
   "Electricity",
   "Maintenance",
-  "Corporation tax",
+  "Municipal Property Tax",
   "Water",
   "Other",
 ];
@@ -414,7 +414,11 @@ function ItemsEditor({ items, onChange, currency }) {
             />
             <Select
               label="Category"
-              value={item.category}
+              value={
+                item.category === "Corporation tax"
+                  ? "Municipal Property Tax"
+                  : item.category
+              }
               onChange={(v) => update(i, "category", v)}
             >
               {categories.map((c) => (
@@ -675,8 +679,8 @@ function BillingEditor({
       title={
         rule
           ? record
-            ? "Edit automation"
-            : "Create automation"
+            ? "Edit recurring schedule"
+            : "Create recurring schedule"
           : "Create an invoice"
       }
       subtitle={
@@ -688,7 +692,7 @@ function BillingEditor({
     >
       <FormShell
         onClose={onClose}
-        label={rule ? "Save automation" : "Create invoice"}
+        label={rule ? "Save schedule" : "Create invoice"}
         onSubmit={() => onSave(data)}
       >
         <div class="form-grid">
@@ -725,7 +729,7 @@ function BillingEditor({
           {rule ? (
             <>
               <Field
-                label="Automation name"
+                label="Schedule name"
                 required
                 value={data.name}
                 onInput={(e) => set("name", e.target.value)}
@@ -837,7 +841,7 @@ function BillingEditor({
           )}
           {rule && (
             <Check
-              label="Automation is active"
+              label="Schedule is active"
               checked={data.active}
               onChange={(v) => set("active", v)}
             />
@@ -983,7 +987,11 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
                         <td>
                           <b>{i.title}</b>
                           <small>{i.description}</small>
-                          <small>{i.category}</small>
+                          <small>
+                            {i.category === "Corporation tax"
+                              ? "Municipal Property Tax"
+                              : i.category}
+                          </small>
                         </td>
                         <td>{i.quantity}</td>
                         <td>
@@ -1449,7 +1457,10 @@ function App() {
     ],
     tenants: ["Tenants", "Good records make better rental relationships."],
     properties: ["Properties", "A home for every property in your portfolio."],
-    automations: ["Automations", "Set your billing on a reliable schedule."],
+    automations: [
+      "Recurring Billing",
+      "Set your billing on a reliable schedule.",
+    ],
     email: [
       "Email delivery",
       "Track optional invoice emails and delivery attempts.",
@@ -1486,7 +1497,9 @@ function App() {
               <span>
                 {p === "dashboard"
                   ? "Overview"
-                  : p[0].toUpperCase() + p.slice(1)}
+                  : p === "automations"
+                    ? "Recurring Billing"
+                    : p[0].toUpperCase() + p.slice(1)}
               </span>
               {p === "automations" && dash.active_rules > 0 && (
                 <b>{dash.active_rules}</b>
@@ -1592,7 +1605,7 @@ function App() {
                     : (go("tenants"), notify("Add an active tenant first."))
                 }
               >
-                Create automation
+                Create recurring schedule
               </Button>
             )}
           </div>
@@ -1688,7 +1701,7 @@ function App() {
                       or yearly.
                     </p>
                     <button onClick={() => go("automations")}>
-                      Manage automations <Icon name="arrow" size={17} />
+                      Manage recurring billing <Icon name="arrow" size={17} />
                     </button>
                     <div class="automation-count">
                       <span class="live-dot" />
@@ -2004,7 +2017,7 @@ function App() {
                   <Empty
                     icon="automations"
                     title="Recurring invoices, without the repetition"
-                    description="Create schedules for rent, maintenance, corporation tax or any regular charge."
+                    description="Create schedules for rent, maintenance, municipal property tax or any regular charge."
                   />
                 </section>
               )}
