@@ -50,12 +50,12 @@ export function createInvoice(
         .get(ruleId, occurrence);
       if (existing) return getInvoice(db, existing.id);
     }
-    const profile = getProfile(db);
-    if (!profile.name)
-      throw new AppError(
-        "Complete your landlord profile before creating invoices",
-      );
     const { tenant, property } = tenantContext(db, input.tenant_id);
+    const profile = getProfile(db, property.landlord_id);
+    if (!profile?.name)
+      throw new AppError(
+        "Complete this landlord profile before creating invoices",
+      );
     if (!tenant.active || !property.active)
       throw new AppError("Tenant and property must be active");
     if (input.auto_email && !tenant.email)
@@ -80,9 +80,10 @@ export function createInvoice(
     const id = Number(
       db
         .prepare(
-          "INSERT INTO invoices(tenant_id,rule_id,occurrence,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO invoices(landlord_id,tenant_id,rule_id,occurrence,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
+          profile.id,
           tenant.id,
           ruleId,
           occurrence,
@@ -123,13 +124,16 @@ export function getInvoice(db, id) {
       .all(id),
   };
 }
-export function listInvoices(db, { search = "", status = "", page = 1 } = {}) {
+export function listInvoices(
+  db,
+  { search = "", status = "", page = 1, landlordId = getProfile(db).id } = {},
+) {
   const rows = db
     .prepare(
-      `SELECT i.id,i.number,i.issue_date,i.due_date,i.total_cents,i.status,json_extract(i.snapshot,'$.tenant.name') tenant_name,json_extract(i.snapshot,'$.property.name') property_name,json_extract(i.snapshot,'$.landlord.currency') currency,COALESCE((SELECT SUM(amount_cents) FROM payments WHERE invoice_id=i.id),0) paid_cents,(SELECT status FROM email_jobs WHERE invoice_id=i.id ORDER BY id DESC LIMIT 1) email_status FROM invoices i ORDER BY i.id DESC`,
+      `SELECT i.id,i.number,i.issue_date,i.due_date,i.total_cents,i.status,json_extract(i.snapshot,'$.tenant.name') tenant_name,json_extract(i.snapshot,'$.property.name') property_name,json_extract(i.snapshot,'$.landlord.currency') currency,COALESCE((SELECT SUM(amount_cents) FROM payments WHERE invoice_id=i.id),0) paid_cents,(SELECT status FROM email_jobs WHERE invoice_id=i.id ORDER BY id DESC LIMIT 1) email_status FROM invoices i WHERE i.landlord_id=? ORDER BY i.id DESC`,
     )
-    .all();
-  const today = todayIn(getProfile(db).timezone);
+    .all(landlordId);
+  const today = todayIn(getProfile(db, landlordId).timezone);
   const mapped = rows.map((i) => ({
     ...i,
     balance_cents: i.total_cents - i.paid_cents,
@@ -157,16 +161,23 @@ export function listInvoices(db, { search = "", status = "", page = 1 } = {}) {
     page,
   };
 }
-export function runSchedules(db, today = todayIn(getProfile(db).timezone)) {
+export function runSchedules(db, today, landlordId) {
   const rules = db
     .prepare(
-      "SELECT * FROM rules WHERE active=1 AND next_date<=? ORDER BY next_date,id LIMIT 100",
+      `SELECT r.*,p.landlord_id FROM rules r
+       JOIN tenants t ON t.id=r.tenant_id
+       JOIN properties p ON p.id=t.property_id
+       WHERE r.active=1 AND (? IS NULL OR p.landlord_id=?)
+       ORDER BY r.next_date,r.id LIMIT 100`,
     )
-    .all(today);
+    .all(landlordId ?? null, landlordId ?? null);
   let created = 0;
   for (const rule of rules) {
     try {
       const { tenant, property } = tenantContext(db, rule.tenant_id);
+      const ruleToday =
+        today || todayIn(getProfile(db, property.landlord_id).timezone);
+      if (rule.next_date > ruleToday) continue;
       if (!tenant.active || !property.active) {
         db.prepare(
           "UPDATE rules SET last_error='Tenant or property is archived; schedule skipped' WHERE id=?",
@@ -174,7 +185,7 @@ export function runSchedules(db, today = todayIn(getProfile(db).timezone)) {
         continue;
       }
       let occurrence = rule.next_date;
-      for (let i = 0; i < 24 && occurrence <= today; i++) {
+      for (let i = 0; i < 24 && occurrence <= ruleToday; i++) {
         if (
           (rule.end_date && occurrence > rule.end_date) ||
           (tenant.lease_end && occurrence > tenant.lease_end)

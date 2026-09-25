@@ -211,6 +211,26 @@ svg {
   margin: 0 14px 16px;
   font-weight: 600;
 }
+.workspace-switcher {
+  display: block;
+  margin: 0 6px 18px;
+}
+.workspace-switcher span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.workspace-switcher select {
+  width: 100%;
+  color: #e5eee5;
+  background: #205044;
+  border: 1px solid #396358;
+  border-radius: 7px;
+  padding: 10px 30px 10px 10px;
+  font-size: 11px;
+}
 .nav-item {
   display: flex;
   align-items: center;
@@ -852,6 +872,44 @@ tr:last-child td {
   grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr);
   gap: 24px;
   align-items: start;
+}
+.profile-list {
+  margin-bottom: 20px;
+}
+.profile-list > .btn {
+  margin: 0 20px 20px;
+}
+.profile-options {
+  padding: 0 20px 16px;
+  display: grid;
+  gap: 8px;
+}
+.profile-options > button {
+  border: 1px solid var(--line);
+  background: #fafbf8;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  color: var(--dark);
+}
+.profile-options > button.selected {
+  border-color: #92ad79;
+  background: #eef3e5;
+}
+.profile-options b,
+.profile-options small {
+  display: block;
+}
+.profile-options b {
+  font-size: 11px;
+}
+.profile-options small {
+  color: var(--muted);
+  font-size: 9px;
+  margin-top: 3px;
 }
 .tip {
   padding: 30px 20px;
