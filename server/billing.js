@@ -50,7 +50,7 @@ export function createInvoice(
 function createInvoiceRecord(
   db,
   input,
-  { ruleId = null, occurrence = null, recreatedFromId = null } = {},
+  { ruleId = null, occurrence = null } = {},
 ) {
   if (ruleId) {
     const existing = db
@@ -58,6 +58,33 @@ function createInvoiceRecord(
       .get(ruleId, occurrence);
     if (existing) return getInvoice(db, existing.id);
   }
+  const prepared = prepareInvoice(db, input);
+  const id = Number(
+    db
+      .prepare(
+        "INSERT INTO invoices(landlord_id,tenant_id,rule_id,occurrence,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        prepared.profile.id,
+        prepared.tenant.id,
+        ruleId,
+        occurrence,
+        input.issue_date,
+        input.due_date,
+        input.period_start,
+        input.period_end,
+        prepared.snapshot,
+        JSON.stringify(prepared.calculated.items),
+        prepared.notes,
+        prepared.calculated.total_cents,
+      ).lastInsertRowid,
+  );
+  const number = `${prepared.profile.prefix}-${input.issue_date.slice(0, 4)}-${String(id).padStart(5, "0")}`;
+  db.prepare("UPDATE invoices SET number=? WHERE id=?").run(number, id);
+  if (input.auto_email) queueEmail(db, id);
+  return getInvoice(db, id);
+}
+function prepareInvoice(db, input) {
   const { tenant, property } = tenantContext(db, input.tenant_id);
   const profile = getProfile(db, property.landlord_id);
   if (!profile?.name)
@@ -85,77 +112,38 @@ function createInvoiceRecord(
   );
   const notes = renderTemplate(input.notes || "", context);
   const snapshot = JSON.stringify({ landlord: profile, tenant, property });
-  const id = Number(
-    db
-      .prepare(
-        "INSERT INTO invoices(landlord_id,tenant_id,rule_id,occurrence,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents,recreated_from_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      )
-      .run(
-        profile.id,
-        tenant.id,
-        ruleId,
-        occurrence,
-        input.issue_date,
-        input.due_date,
-        input.period_start,
-        input.period_end,
-        snapshot,
-        JSON.stringify(calculated.items),
-        notes,
-        calculated.total_cents,
-        recreatedFromId,
-      ).lastInsertRowid,
-  );
-  const number = `${profile.prefix}-${input.issue_date.slice(0, 4)}-${String(id).padStart(5, "0")}`;
-  db.prepare("UPDATE invoices SET number=? WHERE id=?").run(number, id);
-  if (input.auto_email) queueEmail(db, id);
-  return getInvoice(db, id);
+  return { tenant, property, profile, calculated, notes, snapshot };
 }
-export function recreateInvoice(db, invoiceId) {
+export function updateInvoice(db, invoiceId, input) {
   return transaction(db, () => {
-    const original = getInvoice(db, invoiceId);
-    const existing = db
-      .prepare(
-        "SELECT id FROM invoices WHERE recreated_from_id=? ORDER BY id DESC LIMIT 1",
-      )
-      .get(original.id);
-    if (existing) return getInvoice(db, existing.id);
-    if (original.paid_cents)
+    const invoice = getInvoice(db, invoiceId);
+    if (invoice.status === "void")
+      throw new AppError("Void invoices cannot be edited");
+    if (invoice.email_jobs.some((job) => job.status === "sending"))
       throw new AppError(
-        "Remove recorded payments before recreating this invoice",
+        "Email delivery is in progress. Edit the invoice after it completes.",
       );
-    if (original.email_jobs.some((job) => job.status === "sending"))
+    const prepared = prepareInvoice(db, input);
+    if (prepared.calculated.total_cents < invoice.paid_cents)
       throw new AppError(
-        "Email delivery is in progress. Try again after it completes.",
+        "Invoice total cannot be lower than its recorded payments",
       );
-    if (original.status !== "void") {
-      db.prepare("UPDATE invoices SET status='void' WHERE id=?").run(
-        original.id,
-      );
-      db.prepare(
-        "UPDATE email_jobs SET status='cancelled',error='Invoice replaced' WHERE invoice_id=? AND status IN ('pending','failed','uncertain')",
-      ).run(original.id);
-    }
-    return createInvoiceRecord(
-      db,
-      {
-        tenant_id: original.tenant_id,
-        issue_date: original.issue_date,
-        due_date: original.due_date,
-        period_start: original.period_start,
-        period_end: original.period_end,
-        items: original.items.map((item) => ({
-          title: item.title,
-          description: item.description || "",
-          category: item.category,
-          quantity: item.quantity,
-          rate: (item.rate_cents / 100).toFixed(2),
-        })),
-        notes: original.notes,
-        auto_email: false,
-      },
-      { recreatedFromId: original.id },
+    db.prepare(
+      `UPDATE invoices SET landlord_id=?,tenant_id=?,issue_date=?,due_date=?,period_start=?,period_end=?,snapshot=?,items=?,notes=?,total_cents=? WHERE id=?`,
+    ).run(
+      prepared.profile.id,
+      prepared.tenant.id,
+      input.issue_date,
+      input.due_date,
+      input.period_start,
+      input.period_end,
+      prepared.snapshot,
+      JSON.stringify(prepared.calculated.items),
+      prepared.notes,
+      prepared.calculated.total_cents,
+      invoice.id,
     );
+    return getInvoice(db, invoice.id);
   });
 }
 export function getInvoice(db, id) {
@@ -167,16 +155,6 @@ export function getInvoice(db, id) {
     )
     .all(id);
   const paid_cents = payments.reduce((total, p) => total + p.amount_cents, 0);
-  const replacement = db
-    .prepare(
-      "SELECT id,number FROM invoices WHERE recreated_from_id=? ORDER BY id DESC LIMIT 1",
-    )
-    .get(id);
-  const source = row.recreated_from_id
-    ? db
-        .prepare("SELECT id,number FROM invoices WHERE id=?")
-        .get(row.recreated_from_id)
-    : null;
   return {
     ...row,
     snapshot: JSON.parse(row.snapshot),
@@ -184,8 +162,6 @@ export function getInvoice(db, id) {
     payments,
     paid_cents,
     balance_cents: row.total_cents - paid_cents,
-    replacement: replacement || null,
-    recreated_from: source || null,
     email_jobs: db
       .prepare("SELECT * FROM email_jobs WHERE invoice_id=? ORDER BY id DESC")
       .all(id),
@@ -193,38 +169,56 @@ export function getInvoice(db, id) {
 }
 export function listInvoices(
   db,
-  { search = "", status = "", page = 1, landlordId = getProfile(db).id } = {},
+  {
+    search = "",
+    status = "",
+    page = 1,
+    landlordId = getProfile(db).id,
+    pageSize = 50,
+  } = {},
 ) {
+  const today = todayIn(getProfile(db, landlordId).timezone);
+  const escapedSearch = search.toLowerCase().replace(/[\\%_]/g, "\\$&");
   const rows = db
     .prepare(
-      `SELECT i.id,i.number,i.issue_date,i.due_date,i.total_cents,i.status,json_extract(i.snapshot,'$.tenant.name') tenant_name,json_extract(i.snapshot,'$.property.name') property_name,json_extract(i.snapshot,'$.landlord.currency') currency,COALESCE((SELECT SUM(amount_cents) FROM payments WHERE invoice_id=i.id),0) paid_cents,(SELECT status FROM email_jobs WHERE invoice_id=i.id ORDER BY id DESC LIMIT 1) email_status FROM invoices i WHERE i.landlord_id=? ORDER BY i.id DESC`,
+      `WITH invoice_rows AS (
+        SELECT i.id,i.number,i.issue_date,i.due_date,i.total_cents,i.status,
+          json_extract(i.snapshot,'$.tenant.name') tenant_name,
+          json_extract(i.snapshot,'$.property.name') property_name,
+          json_extract(i.snapshot,'$.landlord.currency') currency,
+          COALESCE((SELECT SUM(amount_cents) FROM payments WHERE invoice_id=i.id),0) paid_cents,
+          (SELECT status FROM email_jobs WHERE invoice_id=i.id ORDER BY id DESC LIMIT 1) email_status
+        FROM invoices i WHERE i.landlord_id=?
+      ), classified AS (
+        SELECT *,total_cents-paid_cents balance_cents,
+          CASE
+            WHEN status='void' THEN 'void'
+            WHEN paid_cents>=total_cents THEN 'paid'
+            WHEN due_date<? THEN 'overdue'
+            WHEN paid_cents>0 THEN 'partial'
+            ELSE 'unpaid'
+          END display_status
+        FROM invoice_rows
+        WHERE LOWER(COALESCE(number,'') || ' ' || COALESCE(tenant_name,'') || ' ' || COALESCE(property_name,'')) LIKE ? ESCAPE '\\'
+      )
+      SELECT *,COUNT(*) OVER() filtered_total FROM classified
+      WHERE (?='' OR display_status=?)
+      ORDER BY id DESC LIMIT ? OFFSET ?`,
     )
-    .all(landlordId);
-  const today = todayIn(getProfile(db, landlordId).timezone);
-  const mapped = rows.map((i) => ({
-    ...i,
-    balance_cents: i.total_cents - i.paid_cents,
-    display_status:
-      i.status === "void"
-        ? "void"
-        : i.paid_cents >= i.total_cents
-          ? "paid"
-          : i.due_date < today
-            ? "overdue"
-            : i.paid_cents > 0
-              ? "partial"
-              : "unpaid",
-  }));
-  const filtered = mapped.filter(
-    (i) =>
-      (!status || i.display_status === status) &&
-      `${i.number} ${i.tenant_name} ${i.property_name}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-  );
+    .all(
+      landlordId,
+      today,
+      `%${escapedSearch}%`,
+      status,
+      status,
+      pageSize,
+      (page - 1) * pageSize,
+    );
+  const total = rows[0]?.filtered_total || 0;
+  for (const row of rows) delete row.filtered_total;
   return {
-    items: filtered.slice((page - 1) * 50, page * 50),
-    total: filtered.length,
+    items: rows,
+    total,
     page,
   };
 }

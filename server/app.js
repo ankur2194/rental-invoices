@@ -24,7 +24,7 @@ import {
 import {
   tenantContext,
   createInvoice,
-  recreateInvoice,
+  updateInvoice,
   getInvoice,
   listInvoices,
   queueEmail,
@@ -252,9 +252,12 @@ export async function buildApp(options = {}) {
     if (input.auto_email) requireSmtp();
     return createInvoice(db, input);
   });
-  app.post("/api/invoices/:id/recreate", async (req) =>
-    recreateInvoice(db, id(req)),
-  );
+  app.put("/api/invoices/:id", async (req) => {
+    const input = invoiceSchema.parse(req.body);
+    if (input.auto_email)
+      throw new AppError("Save the invoice before sending it by email");
+    return updateInvoice(db, id(req), input);
+  });
   app.get("/api/invoices/:id", async (req) => getInvoice(db, id(req)));
   app.get("/api/invoices/:id/pdf", async (req, reply) => {
     const inv = getInvoice(db, id(req));
@@ -449,7 +452,7 @@ export async function buildApp(options = {}) {
           "SELECT COUNT(*) n FROM rules r JOIN tenants t ON t.id=r.tenant_id JOIN properties p ON p.id=t.property_id WHERE r.active=1 AND r.last_error!='' AND p.landlord_id=?",
         )
         .get(landlordId).n,
-      recent: listInvoices(db, { landlordId }).items.slice(0, 6),
+      recent: listInvoices(db, { landlordId, pageSize: 6 }).items,
     };
   });
   const root = resolve("dist");
@@ -485,6 +488,7 @@ export async function buildApp(options = {}) {
   app.addHook("onClose", async () => {
     clearInterval(timer);
     while (running) await new Promise((r) => setTimeout(r, 20));
+    mailer?.transport?.close?.();
     if (!options.db) db.close();
   });
   app.decorate("db", db);

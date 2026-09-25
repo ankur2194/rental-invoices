@@ -21,6 +21,7 @@ export function openDatabase(
     CREATE INDEX IF NOT EXISTS invoice_date_idx ON invoices(issue_date);
     CREATE INDEX IF NOT EXISTS invoice_tenant_idx ON invoices(tenant_id);
     CREATE INDEX IF NOT EXISTS payment_invoice_idx ON payments(invoice_id);
+    CREATE INDEX IF NOT EXISTS email_invoice_idx ON email_jobs(invoice_id,id);
     CREATE INDEX IF NOT EXISTS email_status_idx ON email_jobs(status,next_attempt);`);
   migrate(db);
   return db;
@@ -80,14 +81,13 @@ function migrate(db) {
         PRAGMA user_version=2;`);
     });
   version = db.prepare("PRAGMA user_version").get().user_version;
-  if (version < 3)
+  if (version < 3) transaction(db, () => db.exec("PRAGMA user_version=4"));
+  else if (version === 3)
     transaction(db, () => {
-      if (!hasColumn(db, "invoices", "recreated_from_id"))
-        db.exec(
-          "ALTER TABLE invoices ADD COLUMN recreated_from_id INTEGER REFERENCES invoices(id)",
-        );
-      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS invoice_recreated_from_idx ON invoices(recreated_from_id) WHERE recreated_from_id IS NOT NULL;
-        PRAGMA user_version=3;`);
+      db.exec("DROP INDEX IF EXISTS invoice_recreated_from_idx");
+      if (hasColumn(db, "invoices", "recreated_from_id"))
+        db.exec("ALTER TABLE invoices DROP COLUMN recreated_from_id");
+      db.exec("PRAGMA user_version=4");
     });
 }
 export function transaction(db, fn) {
