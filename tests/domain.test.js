@@ -73,3 +73,18 @@ test("invalid calendar dates are rejected", () => {
   assert.throws(() => date.parse("2026-13-01"));
   assert.equal(date.parse("2024-02-29"), "2024-02-29");
 });
+
+test("legacy corporation-tax categories normalize without breaking saved schedules", () => {
+  const item = {
+    title: "Tax contribution",
+    quantity: "1",
+    rate: "1000",
+    category: "Corporation tax",
+  };
+  const old = calculateItems([item]);
+  const current = calculateItems([
+    { ...item, category: "Municipal Property Tax" },
+  ]);
+  assert.equal(old.items[0].category, "Municipal Property Tax");
+  assert.deepEqual(old, current);
+});

@@ -16,10 +16,11 @@ A small, self-hosted portal for one landlord/business. Manage properties and ten
 - Private administrator login; password change and session revocation.
 - Landlord identity, contact details, tax identifier, bank/UPI instructions, currency, invoice prefix and billing time zone.
 - Property/unit records and tenant contact details, default rent, deposit and lease dates; edit or archive records.
-- Manual invoices with multiple items: rent, electricity, maintenance, corporation tax, water and other charges.
+- Manual invoices with multiple items: rent, electricity, maintenance, municipal property tax, water and other charges.
 - Weekly, monthly and yearly recurring schedules, pause/resume, end dates, due dates and optional automatic email.
 - Dynamic item titles, descriptions and notes using billing-period tokens.
-- PDF download directly from invoice lists and invoice details, regardless of SMTP configuration.
+- Structured A4 invoice PDFs with landlord/tenant details, a property section, itemized quantity/rate/amount columns, totals, payment instructions and page numbers. Long content flows across pages with repeated table headers. PDF downloads work from invoice lists and details regardless of SMTP configuration.
+- The same PDF renderer serves downloads and optional email attachments. Previously issued invoices use the updated layout when downloaded again; their stored billing details are unchanged.
 - Optional manual email or automatic email with PDF attached; delivery history, failures and retry controls.
 - Partial/full payment recording, correction of payment records, overdue tracking, search and status filtering.
 - Historical snapshots: changing a tenant, property, currency or landlord profile never rewrites issued invoice details.
@@ -76,15 +77,13 @@ The portal can run directly on your server with PM2. Install **Node.js 24 with n
 
 ### Install and build
 
-Run the application as a regular deployment user with write access to its data directory. On Ubuntu/Debian, install the recommended PDF fonts:
+Run the application as a regular deployment user with write access to its data directory. Install PM2:
 
 ```sh
-sudo apt update
-sudo apt install fonts-dejavu-core
 npm install -g pm2
 ```
 
-The fonts provide the default PDF typefaces and common symbols. Other languages may need compatible font files configured through `PDF_FONT_REGULAR` and `PDF_FONT_BOLD`.
+DejaVu Sans regular and bold are bundled in `assets/fonts/` and embedded in generated PDFs. No operating-system font package is required, including on Raspberry Pi / Ubuntu. Preserve this folder when deploying. Other languages may need compatible font files configured through `PDF_FONT_REGULAR` and `PDF_FONT_BOLD`; bundled font licensing is in `assets/fonts/LICENSE.txt`.
 
 Clone the repository if needed, or enter your existing checkout:
 
@@ -202,7 +201,7 @@ The queue processes up to five emails per minute. Failures retry with exponentia
 1. Complete **Landlord profile**, including payment instructions, currency and time zone (default `Asia/Kolkata`).
 2. Add a **Property**, including its unit/floor and address.
 3. Add a **Tenant** and assign the property. Email can be blank if you only download PDFs.
-4. Use **Create invoice** for a one-off bill, or **Create automation** to set up recurring rent.
+4. Use **Create invoice** for a one-off bill, or **Recurring Billing → Create recurring schedule** to set up recurring rent.
 5. Add electricity/maintenance/tax as additional invoice items or independent schedules. For metered electricity, enter consumed units as quantity and the unit price as rate.
 6. Open an invoice to **Download PDF**, optionally **Send email**, or **Record payment**.
 
@@ -241,7 +240,7 @@ A unique schedule/date key prevents duplicate scheduled invoices, including afte
 
 This is a single-landlord administrative portal, not a multi-company SaaS or tenant login/payment gateway. Tenants receive optional PDFs but do not have accounts. Deposits are reference records, not a deposit ledger. Payments are recorded manually; no bank integration or online collection is included.
 
-All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. Categories such as corporation tax are ordinary user-entered charges; there is no GST computation, statutory tax-return filing, discount engine or automatic utility-meter import. Issued invoices are immutable; void and replace incorrect ones. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger.
+All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. Categories such as municipal property tax are ordinary user-entered charges; there is no GST computation, statutory tax-return filing, discount engine or automatic utility-meter import. Issued invoices are immutable; void and replace incorrect ones. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger.
 
 Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates are interpreted in the current profile currency, so update those amounts before creating further invoices if you change currency. Invoice numbers use a global, increasing sequence (not reset annually), such as `INV-2026-00001`. Existing invoice numbers stay unchanged when the prefix changes.
 
@@ -270,7 +269,7 @@ npm run build
 npm run dev
 ```
 
-Visit `http://localhost:3000`. For frontend hot reload, keep the server running, set `APP_URL=http://localhost:5173`, restart the server, and run `npm run dev:web` in another terminal. Vite proxies `/api` to port 3000. Use a disposable development database; active schedules run in development too. For non-Latin PDF text, install DejaVu Sans locally or configure `PDF_FONT_REGULAR`/`PDF_FONT_BOLD` to compatible font files. Docker includes DejaVu; languages whose glyphs are not covered need appropriate fonts.
+Visit `http://localhost:3000`. For frontend hot reload, keep the server running, set `APP_URL=http://localhost:5173`, restart the server, and run `npm run dev:web` in another terminal. Vite proxies `/api` to port 3000. Use a disposable development database; active schedules run in development too. PDF fonts are bundled for both PM2 and Docker. For languages not covered by DejaVu Sans, configure `PDF_FONT_REGULAR`/`PDF_FONT_BOLD` with compatible font files.
 
 ## Backups and restore
 
@@ -318,6 +317,7 @@ Tests cover authentication/request protections, immutable invoice snapshots, PDF
 ## Structure
 
 ```text
+assets/fonts/ Bundled PDF fonts and redistribution license
 server/       Fastify API, SQLite schema, auth, billing, PDFs, SMTP worker
 web/          Preact management interface and responsive styles
 scripts/      Database backup and password recovery
@@ -325,3 +325,11 @@ tests/       Domain and API integration tests
 Dockerfile    Multi-stage production build
 compose.yaml  One-service deployment, configurable port and data volume
 ```
+
+## PDF layout and terminology upgrades
+
+After pulling an update, run `npm ci --include=dev`, `npm run build`, and `pm2 restart rental-invoices --update-env` (or rebuild the Docker image). Download an existing invoice again to receive the updated PDF layout. Previously saved or emailed attachments remain unchanged. Navigation now uses **Recurring Billing**, while **Landlord**, **Tenants**, and **Properties** remain the standard rental terms. Legacy `Corporation tax` items and recurring schedules are accepted and displayed as **Municipal Property Tax** without a database migration. User-written item titles and descriptions are preserved.
+
+Example invoice using fictional billing details:
+
+![Structured rental invoice preview](docs/invoice-preview.png)
