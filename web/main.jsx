@@ -863,7 +863,7 @@ function BillingEditor({
     </Modal>
   );
 }
-function InvoiceDetail({ id, onClose, onChange, system, notify }) {
+function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
   const [inv, setInv] = useState(null),
     [error, setError] = useState(""),
     [emailDialog, setEmailDialog] = useState(false),
@@ -886,6 +886,26 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
       await reload();
       onChange();
       notify(message);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const recreate = async () => {
+    if (
+      !confirm(
+        `Recreate ${inv.number} with the latest landlord, tenant and property details? The current invoice will be voided and kept in your history.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      const replacement = await api(`/invoices/${id}/recreate`, "POST", {});
+      onChange();
+      notify(`Replacement ${replacement.number} created`);
+      onRecreated(replacement.id);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -972,6 +992,31 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
               >
                 Send email to…
               </Button>
+              {inv.replacement ? (
+                <Button
+                  secondary
+                  onClick={() => onRecreated(inv.replacement.id)}
+                >
+                  Open replacement
+                </Button>
+              ) : (
+                <Button
+                  secondary
+                  disabled={
+                    busy ||
+                    inv.paid_cents > 0 ||
+                    inv.email_jobs.some((job) => job.status === "sending")
+                  }
+                  title={
+                    inv.paid_cents > 0
+                      ? "Remove recorded payments before recreating"
+                      : "Create a replacement using current records"
+                  }
+                  onClick={recreate}
+                >
+                  Recreate invoice
+                </Button>
+              )}
               {inv.status !== "void" && (
                 <button
                   disabled={busy}
@@ -997,6 +1042,9 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
                 <div>
                   <h2>{inv.status === "void" ? "VOID INVOICE" : "INVOICE"}</h2>
                   <p class="invoice-number">{inv.number}</p>
+                  {inv.recreated_from && (
+                    <small>Recreated from {inv.recreated_from.number}</small>
+                  )}
                 </div>
                 <div class="right">
                   <b>{inv.snapshot.landlord.name}</b>
@@ -2338,6 +2386,9 @@ function App() {
           id={modal.id}
           onClose={() => setModal(null)}
           onChange={refresh}
+          onRecreated={(replacementId) =>
+            setModal({ kind: "detail", id: replacementId })
+          }
           system={system}
           notify={notify}
         />

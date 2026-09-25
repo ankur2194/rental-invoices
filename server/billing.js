@@ -43,64 +43,119 @@ export function createInvoice(
   input,
   { ruleId = null, occurrence = null } = {},
 ) {
+  return transaction(db, () =>
+    createInvoiceRecord(db, input, { ruleId, occurrence }),
+  );
+}
+function createInvoiceRecord(
+  db,
+  input,
+  { ruleId = null, occurrence = null, recreatedFromId = null } = {},
+) {
+  if (ruleId) {
+    const existing = db
+      .prepare("SELECT id FROM invoices WHERE rule_id=? AND occurrence=?")
+      .get(ruleId, occurrence);
+    if (existing) return getInvoice(db, existing.id);
+  }
+  const { tenant, property } = tenantContext(db, input.tenant_id);
+  const profile = getProfile(db, property.landlord_id);
+  if (!profile?.name)
+    throw new AppError(
+      "Complete this landlord profile before creating invoices",
+    );
+  if (!tenant.active || !property.active)
+    throw new AppError("Tenant and property must be active");
+  if (input.auto_email && !tenant.email)
+    throw new AppError("Add a tenant email or disable email delivery");
+  const context = {
+    period_start: input.period_start,
+    period_end: input.period_end,
+    issue_date: input.issue_date,
+    tenant: tenant.name,
+    property: property.name,
+    unit: property.unit,
+  };
+  const calculated = calculateItems(
+    input.items.map((item) => ({
+      ...item,
+      title: renderTemplate(item.title, context),
+      description: renderTemplate(item.description || "", context),
+    })),
+  );
+  const notes = renderTemplate(input.notes || "", context);
+  const snapshot = JSON.stringify({ landlord: profile, tenant, property });
+  const id = Number(
+    db
+      .prepare(
+        "INSERT INTO invoices(landlord_id,tenant_id,rule_id,occurrence,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents,recreated_from_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        profile.id,
+        tenant.id,
+        ruleId,
+        occurrence,
+        input.issue_date,
+        input.due_date,
+        input.period_start,
+        input.period_end,
+        snapshot,
+        JSON.stringify(calculated.items),
+        notes,
+        calculated.total_cents,
+        recreatedFromId,
+      ).lastInsertRowid,
+  );
+  const number = `${profile.prefix}-${input.issue_date.slice(0, 4)}-${String(id).padStart(5, "0")}`;
+  db.prepare("UPDATE invoices SET number=? WHERE id=?").run(number, id);
+  if (input.auto_email) queueEmail(db, id);
+  return getInvoice(db, id);
+}
+export function recreateInvoice(db, invoiceId) {
   return transaction(db, () => {
-    if (ruleId) {
-      const existing = db
-        .prepare("SELECT id FROM invoices WHERE rule_id=? AND occurrence=?")
-        .get(ruleId, occurrence);
-      if (existing) return getInvoice(db, existing.id);
-    }
-    const { tenant, property } = tenantContext(db, input.tenant_id);
-    const profile = getProfile(db, property.landlord_id);
-    if (!profile?.name)
+    const original = getInvoice(db, invoiceId);
+    const existing = db
+      .prepare(
+        "SELECT id FROM invoices WHERE recreated_from_id=? ORDER BY id DESC LIMIT 1",
+      )
+      .get(original.id);
+    if (existing) return getInvoice(db, existing.id);
+    if (original.paid_cents)
       throw new AppError(
-        "Complete this landlord profile before creating invoices",
+        "Remove recorded payments before recreating this invoice",
       );
-    if (!tenant.active || !property.active)
-      throw new AppError("Tenant and property must be active");
-    if (input.auto_email && !tenant.email)
-      throw new AppError("Add a tenant email or disable email delivery");
-    const context = {
-      period_start: input.period_start,
-      period_end: input.period_end,
-      issue_date: input.issue_date,
-      tenant: tenant.name,
-      property: property.name,
-      unit: property.unit,
-    };
-    const calculated = calculateItems(
-      input.items.map((item) => ({
-        ...item,
-        title: renderTemplate(item.title, context),
-        description: renderTemplate(item.description || "", context),
-      })),
+    if (original.email_jobs.some((job) => job.status === "sending"))
+      throw new AppError(
+        "Email delivery is in progress. Try again after it completes.",
+      );
+    if (original.status !== "void") {
+      db.prepare("UPDATE invoices SET status='void' WHERE id=?").run(
+        original.id,
+      );
+      db.prepare(
+        "UPDATE email_jobs SET status='cancelled',error='Invoice replaced' WHERE invoice_id=? AND status IN ('pending','failed','uncertain')",
+      ).run(original.id);
+    }
+    return createInvoiceRecord(
+      db,
+      {
+        tenant_id: original.tenant_id,
+        issue_date: original.issue_date,
+        due_date: original.due_date,
+        period_start: original.period_start,
+        period_end: original.period_end,
+        items: original.items.map((item) => ({
+          title: item.title,
+          description: item.description || "",
+          category: item.category,
+          quantity: item.quantity,
+          rate: (item.rate_cents / 100).toFixed(2),
+        })),
+        notes: original.notes,
+        auto_email: false,
+      },
+      { recreatedFromId: original.id },
     );
-    const notes = renderTemplate(input.notes || "", context);
-    const snapshot = JSON.stringify({ landlord: profile, tenant, property });
-    const id = Number(
-      db
-        .prepare(
-          "INSERT INTO invoices(landlord_id,tenant_id,rule_id,occurrence,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          profile.id,
-          tenant.id,
-          ruleId,
-          occurrence,
-          input.issue_date,
-          input.due_date,
-          input.period_start,
-          input.period_end,
-          snapshot,
-          JSON.stringify(calculated.items),
-          notes,
-          calculated.total_cents,
-        ).lastInsertRowid,
-    );
-    const number = `${profile.prefix}-${input.issue_date.slice(0, 4)}-${String(id).padStart(5, "0")}`;
-    db.prepare("UPDATE invoices SET number=? WHERE id=?").run(number, id);
-    if (input.auto_email) queueEmail(db, id);
-    return getInvoice(db, id);
   });
 }
 export function getInvoice(db, id) {
@@ -112,6 +167,16 @@ export function getInvoice(db, id) {
     )
     .all(id);
   const paid_cents = payments.reduce((total, p) => total + p.amount_cents, 0);
+  const replacement = db
+    .prepare(
+      "SELECT id,number FROM invoices WHERE recreated_from_id=? ORDER BY id DESC LIMIT 1",
+    )
+    .get(id);
+  const source = row.recreated_from_id
+    ? db
+        .prepare("SELECT id,number FROM invoices WHERE id=?")
+        .get(row.recreated_from_id)
+    : null;
   return {
     ...row,
     snapshot: JSON.parse(row.snapshot),
@@ -119,6 +184,8 @@ export function getInvoice(db, id) {
     payments,
     paid_cents,
     balance_cents: row.total_cents - paid_cents,
+    replacement: replacement || null,
+    recreated_from: source || null,
     email_jobs: db
       .prepare("SELECT * FROM email_jobs WHERE invoice_id=? ORDER BY id DESC")
       .all(id),

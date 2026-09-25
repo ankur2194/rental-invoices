@@ -34,51 +34,61 @@ function hasColumn(db, table, column) {
     .some((c) => c.name === column);
 }
 function migrate(db) {
-  const version = db.prepare("PRAGMA user_version").get().user_version;
-  if (version >= 2) return;
-  transaction(db, () => {
-    db.exec(`CREATE TABLE IF NOT EXISTS landlord_profiles (
+  let version = db.prepare("PRAGMA user_version").get().user_version;
+  if (version < 2)
+    transaction(db, () => {
+      db.exec(`CREATE TABLE IF NOT EXISTS landlord_profiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       data TEXT NOT NULL
     )`);
-    const legacy = db.prepare("SELECT data FROM profile WHERE id=1").get();
-    if (!db.prepare("SELECT id FROM landlord_profiles LIMIT 1").get())
-      db.prepare("INSERT INTO landlord_profiles(id,data) VALUES(1,?)").run(
-        legacy?.data || defaultProfile,
-      );
-    if (!hasColumn(db, "properties", "landlord_id"))
-      db.exec(
-        "ALTER TABLE properties ADD COLUMN landlord_id INTEGER REFERENCES landlord_profiles(id)",
-      );
-    db.prepare(
-      "UPDATE properties SET landlord_id=1 WHERE landlord_id IS NULL",
-    ).run();
-    if (!hasColumn(db, "invoices", "landlord_id"))
-      db.exec(
-        "ALTER TABLE invoices ADD COLUMN landlord_id INTEGER REFERENCES landlord_profiles(id)",
-      );
-    db.prepare(
-      `UPDATE invoices SET landlord_id=COALESCE(
-      (SELECT p.landlord_id FROM tenants t JOIN properties p ON p.id=t.property_id WHERE t.id=invoices.tenant_id),
-      1
-    ) WHERE landlord_id IS NULL`,
-    ).run();
-    db.exec(`CREATE INDEX IF NOT EXISTS property_landlord_idx ON properties(landlord_id);
-      CREATE INDEX IF NOT EXISTS invoice_landlord_idx ON invoices(landlord_id);
-      CREATE TRIGGER IF NOT EXISTS property_landlord_required_insert
-        BEFORE INSERT ON properties WHEN NEW.landlord_id IS NULL
-        BEGIN SELECT RAISE(ABORT, 'Property requires a landlord profile'); END;
-      CREATE TRIGGER IF NOT EXISTS property_landlord_required_update
-        BEFORE UPDATE OF landlord_id ON properties WHEN NEW.landlord_id IS NULL
-        BEGIN SELECT RAISE(ABORT, 'Property requires a landlord profile'); END;
-      CREATE TRIGGER IF NOT EXISTS invoice_landlord_required_insert
-        BEFORE INSERT ON invoices WHEN NEW.landlord_id IS NULL
-        BEGIN SELECT RAISE(ABORT, 'Invoice requires a landlord profile'); END;
-      CREATE TRIGGER IF NOT EXISTS invoice_landlord_required_update
-        BEFORE UPDATE OF landlord_id ON invoices WHEN NEW.landlord_id IS NULL
-        BEGIN SELECT RAISE(ABORT, 'Invoice requires a landlord profile'); END;
-      PRAGMA user_version=2;`);
-  });
+      const legacy = db.prepare("SELECT data FROM profile WHERE id=1").get();
+      if (!db.prepare("SELECT id FROM landlord_profiles LIMIT 1").get())
+        db.prepare("INSERT INTO landlord_profiles(id,data) VALUES(1,?)").run(
+          legacy?.data || defaultProfile,
+        );
+      if (!hasColumn(db, "properties", "landlord_id"))
+        db.exec(
+          "ALTER TABLE properties ADD COLUMN landlord_id INTEGER REFERENCES landlord_profiles(id)",
+        );
+      db.prepare(
+        "UPDATE properties SET landlord_id=1 WHERE landlord_id IS NULL",
+      ).run();
+      if (!hasColumn(db, "invoices", "landlord_id"))
+        db.exec(
+          "ALTER TABLE invoices ADD COLUMN landlord_id INTEGER REFERENCES landlord_profiles(id)",
+        );
+      db.prepare(
+        `UPDATE invoices SET landlord_id=COALESCE(
+        (SELECT p.landlord_id FROM tenants t JOIN properties p ON p.id=t.property_id WHERE t.id=invoices.tenant_id),
+        1
+      ) WHERE landlord_id IS NULL`,
+      ).run();
+      db.exec(`CREATE INDEX IF NOT EXISTS property_landlord_idx ON properties(landlord_id);
+        CREATE INDEX IF NOT EXISTS invoice_landlord_idx ON invoices(landlord_id);
+        CREATE TRIGGER IF NOT EXISTS property_landlord_required_insert
+          BEFORE INSERT ON properties WHEN NEW.landlord_id IS NULL
+          BEGIN SELECT RAISE(ABORT, 'Property requires a landlord profile'); END;
+        CREATE TRIGGER IF NOT EXISTS property_landlord_required_update
+          BEFORE UPDATE OF landlord_id ON properties WHEN NEW.landlord_id IS NULL
+          BEGIN SELECT RAISE(ABORT, 'Property requires a landlord profile'); END;
+        CREATE TRIGGER IF NOT EXISTS invoice_landlord_required_insert
+          BEFORE INSERT ON invoices WHEN NEW.landlord_id IS NULL
+          BEGIN SELECT RAISE(ABORT, 'Invoice requires a landlord profile'); END;
+        CREATE TRIGGER IF NOT EXISTS invoice_landlord_required_update
+          BEFORE UPDATE OF landlord_id ON invoices WHEN NEW.landlord_id IS NULL
+          BEGIN SELECT RAISE(ABORT, 'Invoice requires a landlord profile'); END;
+        PRAGMA user_version=2;`);
+    });
+  version = db.prepare("PRAGMA user_version").get().user_version;
+  if (version < 3)
+    transaction(db, () => {
+      if (!hasColumn(db, "invoices", "recreated_from_id"))
+        db.exec(
+          "ALTER TABLE invoices ADD COLUMN recreated_from_id INTEGER REFERENCES invoices(id)",
+        );
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS invoice_recreated_from_idx ON invoices(recreated_from_id) WHERE recreated_from_id IS NOT NULL;
+        PRAGMA user_version=3;`);
+    });
 }
 export function transaction(db, fn) {
   db.exec("BEGIN IMMEDIATE");
