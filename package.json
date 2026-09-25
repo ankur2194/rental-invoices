@@ -1,0 +1,36 @@
+{
+  "name": "rental-invoices",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env server/index.js",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "test": "node --test tests/*.test.js",
+    "check": "npm test && npm run build",
+    "backup": "node --env-file-if-exists=.env scripts/backup.js",
+    "reset-password": "node --env-file-if-exists=.env scripts/reset-password.js",
+    "format": "prettier --write server web tests scripts *.js *.json *.html *.yaml README.md .github/workflows/*.yml"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/helmet": "13.1.1",
+    "@fastify/rate-limit": "10.3.0",
+    "@fastify/static": "10.1.4",
+    "fastify": "5.12.5",
+    "nodemailer": "10.0.10",
+    "pdfkit": "0.17.2",
+    "preact": "10.29.8",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "prettier": "3.9.9",
+    "vite": "7.3.6"
+  }
+}
