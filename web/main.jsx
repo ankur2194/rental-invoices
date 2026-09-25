@@ -28,6 +28,18 @@ const currencyOptions = [
   "CHF",
   "AED",
 ];
+const blankProfile = () => ({
+  name: "",
+  email: "",
+  phone: "",
+  address: "",
+  tax_id: "",
+  payment_details: "",
+  notes: "",
+  currency: "INR",
+  timezone: "Asia/Kolkata",
+  prefix: "INV",
+});
 const paths = {
   dashboard: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   invoices: "M6 3h12v18l-3-2-3 2-3-2-3 2z M9 7h6 M9 11h6 M9 15h3",
@@ -512,7 +524,7 @@ function RecordEditor({ kind, record, properties, onClose, onSave, currency }) {
         }
       : defaults,
   );
-  const set = (k, v) => setData({ ...data, [k]: v });
+  const set = (k, v) => setData((current) => ({ ...current, [k]: v }));
   return (
     <Modal
       title={`${record ? "Edit" : "Add"} ${kind}`}
@@ -1194,13 +1206,17 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
     </Modal>
   );
 }
-function Profile({ profile, onSaved, onLogout }) {
+function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
   const [data, setData] = useState(profile),
+    [creating, setCreating] = useState(false),
     [password, setPassword] = useState({ current: "", password: "" }),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
-  useEffect(() => setData(profile), [profile]);
-  const set = (k, v) => setData({ ...data, [k]: v });
+  useEffect(() => {
+    setData(profile);
+    setCreating(false);
+  }, [profile]);
+  const set = (k, v) => setData((current) => ({ ...current, [k]: v }));
   return (
     <div class="settings-grid">
       <section class="panel">
@@ -1211,11 +1227,17 @@ function Profile({ profile, onSaved, onLogout }) {
           </div>
         </div>
         <FormShell
-          label="Save profile"
-          onClose={() => setData(profile)}
+          label={creating ? "Create profile" : "Save profile"}
+          onClose={() => {
+            setCreating(false);
+            setData(profile);
+          }}
           onSubmit={async () => {
-            await api("/profile", "PUT", data);
-            onSaved();
+            const saved = creating
+              ? await api("/profiles", "POST", data)
+              : await api(`/profiles/${profile.id}`, "PUT", data);
+            setCreating(false);
+            onSaved(saved.id);
           }}
         >
           <div class="form-grid">
@@ -1285,6 +1307,48 @@ function Profile({ profile, onSaved, onLogout }) {
         </FormShell>
       </section>
       <aside>
+        <section class="panel profile-list">
+          <div class="panel-head">
+            <div>
+              <h3>Landlord profiles</h3>
+              <p>Select a profile to manage its portfolio.</p>
+            </div>
+          </div>
+          <div class="profile-options">
+            {profiles.map((item) => (
+              <button
+                type="button"
+                class={item.id === profile.id && !creating ? "selected" : ""}
+                onClick={() => {
+                  setCreating(false);
+                  setData(item);
+                  onSelect(item.id);
+                }}
+              >
+                <span class="avatar">
+                  {(item.name || "L").slice(0, 1).toUpperCase()}
+                </span>
+                <span>
+                  <b>{item.name || "Incomplete profile"}</b>
+                  <small>
+                    {item.currency} · {item.prefix}
+                  </small>
+                </span>
+              </button>
+            ))}
+          </div>
+          <Button
+            secondary
+            icon="plus"
+            type="button"
+            onClick={() => {
+              setCreating(true);
+              setData(blankProfile());
+            }}
+          >
+            Add landlord profile
+          </Button>
+        </section>
         <section class="panel">
           <div class="panel-head">
             <div>
@@ -1353,6 +1417,8 @@ function App() {
   const [auth, setAuth] = useState(null),
     [page, setPage] = useState("dashboard"),
     [mobile, setMobile] = useState(false),
+    [profiles, setProfiles] = useState([]),
+    [profileId, setProfileId] = useState(null),
     [profile, setProfile] = useState(null),
     [system, setSystem] = useState(null),
     [properties, setProperties] = useState([]),
@@ -1388,6 +1454,8 @@ function App() {
     const expired = () => {
       setAuth(false);
       setModal(null);
+      setProfiles([]);
+      setProfileId(null);
       setProfile(null);
     };
     window.addEventListener("session-expired", expired);
@@ -1396,17 +1464,39 @@ function App() {
   useEffect(() => {
     if (!auth) return;
     let cancelled = false;
-    setLoading(true);
-    Promise.all([
-      api("/profile"),
-      api("/system"),
-      api("/properties"),
-      api("/tenants"),
-      api("/rules"),
-      api("/dashboard"),
-    ])
-      .then(([p, s, pr, t, r, d]) => {
+    api("/profiles")
+      .then((items) => {
         if (cancelled) return;
+        setProfiles(items);
+        const stored = Number(localStorage.getItem("rentfolio-landlord"));
+        const selected = items.find((item) => item.id === profileId)
+          ? profileId
+          : items.find((item) => item.id === stored)?.id || items[0]?.id;
+        if (selected && selected !== profileId) setProfileId(selected);
+      })
+      .catch((e) => !cancelled && setError(e.message));
+    return () => {
+      cancelled = true;
+    };
+  }, [auth, revision]);
+  useEffect(() => {
+    if (!auth || !profileId) return;
+    let cancelled = false;
+    setLoading(true);
+    const scope = `?landlord_id=${profileId}`;
+    Promise.all([
+      api("/profiles"),
+      api("/system" + scope),
+      api("/properties" + scope),
+      api("/tenants" + scope),
+      api("/rules" + scope),
+      api("/dashboard" + scope),
+    ])
+      .then(([allProfiles, s, pr, t, r, d]) => {
+        if (cancelled) return;
+        const p = allProfiles.find((item) => item.id === profileId);
+        if (!p) throw new Error("Landlord profile not found");
+        setProfiles(allProfiles);
         setProfile(p);
         setSystem(s);
         setProperties(pr);
@@ -1420,19 +1510,19 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [auth, revision]);
+  }, [auth, profileId, revision]);
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || !profileId) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       if (page === "invoices")
         api(
-          `/invoices?search=${encodeURIComponent(search)}&status=${status}&page=${pagination}`,
+          `/invoices?landlord_id=${profileId}&search=${encodeURIComponent(search)}&status=${status}&page=${pagination}`,
         )
           .then((x) => !cancelled && setInvoices(x))
           .catch((e) => !cancelled && setError(e.message));
       if (page === "email")
-        api("/emails")
+        api(`/emails?landlord_id=${profileId}`)
           .then((x) => !cancelled && setEmails(x))
           .catch((e) => !cancelled && setError(e.message));
     }, 150);
@@ -1440,7 +1530,18 @@ function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [auth, page, search, status, pagination, revision]);
+  }, [auth, profileId, page, search, status, pagination, revision]);
+  const selectProfile = (selected) => {
+    const next = Number(selected);
+    if (next === profileId) return;
+    localStorage.setItem("rentfolio-landlord", String(next));
+    setProfileId(next);
+    setProfile(null);
+    setModal(null);
+    setPagination(1);
+    setSearch("");
+    setStatus("");
+  };
   const go = (p) => {
     setPage(p);
     setMobile(false);
@@ -1460,6 +1561,8 @@ function App() {
     try {
       await api("/logout", "POST", {});
       setAuth(false);
+      setProfiles([]);
+      setProfileId(null);
       setProfile(null);
     } catch (e) {
       setError(e.message);
@@ -1473,7 +1576,12 @@ function App() {
       invoice: "invoices",
     }[modal.kind];
     const result = await api(
-      "/" + endpoint + (modal.record ? "/" + modal.record.id : ""),
+      "/" +
+        endpoint +
+        (modal.record ? "/" + modal.record.id : "") +
+        (modal.kind === "property" && !modal.record
+          ? `?landlord_id=${profileId}`
+          : ""),
       modal.record ? "PUT" : "POST",
       data,
     );
@@ -1516,8 +1624,8 @@ function App() {
       "Track optional invoice emails and delivery attempts.",
     ],
     profile: [
-      "Landlord profile",
-      "Make your invoices feel like your business.",
+      "Landlord profiles",
+      "Manage each landlord and its invoice identity.",
     ],
   };
   const total = dash.totals.find((t) => t.currency === profile.currency) || {};
@@ -1531,6 +1639,20 @@ function App() {
           rentfolio<span class="brand-dot">.</span>
         </div>
         <div class="workspace-label">LANDLORD WORKSPACE</div>
+        <label class="workspace-switcher">
+          <span>Current profile</span>
+          <select
+            aria-label="Current landlord profile"
+            value={profileId}
+            onChange={(e) => selectProfile(e.target.value)}
+          >
+            {profiles.map((item) => (
+              <option value={item.id}>
+                {item.name || "Incomplete profile"}
+              </option>
+            ))}
+          </select>
+        </label>
         <nav>
           {[
             "dashboard",
@@ -1569,7 +1691,7 @@ function App() {
             class={page === "profile" ? "nav-item active" : "nav-item"}
             onClick={() => go("profile")}
           >
-            <Icon name="profile" /> Landlord profile
+            <Icon name="profile" /> Landlord profiles
           </button>
           <div class="account">
             <span class="avatar">
@@ -2011,7 +2133,11 @@ function App() {
                   class="text-link"
                   onClick={async () => {
                     try {
-                      const result = await api("/rules/run", "POST", {});
+                      const result = await api(
+                        `/rules/run?landlord_id=${profileId}`,
+                        "POST",
+                        {},
+                      );
                       refresh();
                       notify(
                         `${result.created} invoices created from due schedules`,
@@ -2164,7 +2290,10 @@ function App() {
             <Profile
               key={revision}
               profile={profile}
-              onSaved={() => {
+              profiles={profiles}
+              onSelect={selectProfile}
+              onSaved={(savedId) => {
+                selectProfile(savedId);
                 refresh();
                 notify("Profile updated");
               }}

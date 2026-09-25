@@ -1,6 +1,6 @@
 # Rentfolio — Rental invoices portal
 
-A small, self-hosted portal for one landlord/business. Manage properties and tenants, create rent and other property-charge invoices, download PDFs, record payments, and automate weekly, monthly or yearly billing. **Email is optional and off by default.**
+A small, self-hosted portal for managing one or more landlord identities from a single administrator login. Keep each landlord's properties, tenants, invoices and recurring billing separate while using one lightweight deployment. **Email is optional and off by default.**
 
 ## Stack
 
@@ -14,8 +14,9 @@ A small, self-hosted portal for one landlord/business. Manage properties and ten
 ## Included
 
 - Private administrator login; password change and session revocation.
-- Landlord identity, contact details, tax identifier, bank/UPI instructions, currency, invoice prefix and billing time zone.
-- Property/unit records and tenant contact details, default rent, deposit and lease dates; edit or archive records.
+- Multiple landlord profiles, each with its own identity, contact details, tax identifier, bank/UPI instructions, currency, invoice prefix and billing time zone.
+- A profile switcher that scopes the dashboard, properties, tenants, invoices, recurring billing and email delivery history to the selected landlord.
+- Property/unit records assigned to a landlord profile, plus tenant contact details, default rent, deposit and lease dates; edit or archive records.
 - Manual invoices with multiple items: rent, electricity, maintenance, municipal property tax, water and other charges.
 - Weekly, monthly and yearly recurring schedules, pause/resume, end dates, due dates and optional automatic email.
 - Dynamic item titles, descriptions and notes using billing-period tokens.
@@ -161,6 +162,8 @@ pm2 save
 
 After changing only `.env`, run `pm2 restart rental-invoices --update-env`. Environment values already exported in the shell or PM2 take precedence over `.env`; avoid conflicting definitions. Preserve the data directory and `.env` during updates.
 
+When upgrading from a single-profile release, take a backup before stopping the old process. The first start of this version runs a transactional SQLite migration: the existing landlord becomes the first profile, every existing property and invoice is assigned to it, and tenant, payment, recurring schedule, email and historical invoice-snapshot data remain unchanged. No manual SQL or new environment variable is required.
+
 To create a consistent backup from the project root:
 
 ```sh
@@ -200,8 +203,8 @@ To inspect email delivery attempts on PM2, run `pm2 logs rental-invoices --lines
 
 ## First-use workflow
 
-1. Complete **Landlord profile**, including payment instructions, currency and time zone (default `Asia/Kolkata`).
-2. Add a **Property**, including its unit/floor and address.
+1. Complete the migrated/default profile under **Landlord profiles**, or add another profile. Each profile has its own payment instructions, currency, prefix and time zone.
+2. Select the landlord in the sidebar, then add a **Property**. New properties belong to the selected profile.
 3. Add a **Tenant** and assign the property. Email can be blank if you only download PDFs.
 4. Use **Create invoice** for a one-off bill, or **Recurring Billing → Create recurring schedule** to set up recurring rent.
 5. Add electricity/maintenance/tax as additional invoice items or independent schedules. For metered electricity, enter consumed units as quantity and the unit price as rate.
@@ -240,11 +243,11 @@ A unique schedule/date key prevents duplicate scheduled invoices, including afte
 
 ### Accounting scope
 
-This is a single-landlord administrative portal, not a multi-company SaaS or tenant login/payment gateway. Tenants receive optional PDFs but do not have accounts. Deposits are reference records, not a deposit ledger. Payments are recorded manually; no bank integration or online collection is included.
+This is a private multi-landlord administrative portal, not a public multi-company SaaS or tenant login/payment gateway. All administrator accounts can access all landlord profiles. Tenants receive optional PDFs but do not have accounts. Deposits are reference records, not a deposit ledger. Payments are recorded manually; no bank integration or online collection is included.
 
 All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. Categories such as municipal property tax are ordinary user-entered charges; there is no GST computation, statutory tax-return filing, discount engine or automatic utility-meter import. Issued invoices are immutable; void and replace incorrect ones. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger.
 
-Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates are interpreted in the current profile currency, so update those amounts before creating further invoices if you change currency. Invoice numbers use a global, increasing sequence (not reset annually), such as `INV-2026-00001`. Existing invoice numbers stay unchanged when the prefix changes.
+Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates use the currency of the landlord profile that owns their property, so update those amounts before creating further invoices if you change that profile's currency. Invoice numbers use a global, increasing sequence (not reset annually), such as `INV-2026-00001`. Each profile can have its own prefix; existing invoice numbers stay unchanged when a prefix changes.
 
 ## Local development
 

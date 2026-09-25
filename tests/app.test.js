@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDatabase, getProfile } from "../server/db.js";
 import { buildApp } from "../server/app.js";
 import { getInvoice, runSchedules } from "../server/billing.js";
@@ -178,6 +182,118 @@ test("authenticated invoice workflow, snapshot, PDF, partial payments, void and 
   );
   assert.equal((await call("/api/invoices?status=void")).json().total, 1);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM email_jobs").get().n, 0);
+});
+
+test("multiple landlord profiles isolate portfolios and invoice identity", async (t) => {
+  const { db, call, property, input } = await fixture(t);
+  const second = (
+    await call("/api/profiles", "POST", {
+      name: "Second Landlord",
+      email: "second@example.com",
+      phone: "",
+      address: "Ahmedabad",
+      tax_id: "",
+      payment_details: "Bank transfer",
+      notes: "",
+      currency: "USD",
+      timezone: "America/New_York",
+      prefix: "SECOND",
+    })
+  ).json();
+  assert.equal(second.id, 2);
+  const secondProperty = (
+    await call(`/api/properties?landlord_id=${second.id}`, "POST", {
+      name: "Second Property",
+      address: "New York",
+      unit: "Suite 2",
+    })
+  ).json();
+  const secondTenant = (
+    await call("/api/tenants", "POST", {
+      name: "Second Tenant",
+      property_id: secondProperty.id,
+      rent: "1500",
+    })
+  ).json();
+  const invoice = (
+    await call("/api/invoices", "POST", {
+      ...input,
+      tenant_id: secondTenant.id,
+      items: [{ ...input.items[0], rate: "1500" }],
+    })
+  ).json();
+  assert.equal(invoice.landlord_id, second.id);
+  assert.equal(invoice.snapshot.landlord.name, "Second Landlord");
+  assert.equal(invoice.snapshot.landlord.currency, "USD");
+  assert.match(invoice.number, /^SECOND-/);
+  assert.equal(
+    db.prepare("SELECT landlord_id FROM properties WHERE id=?").get(property.id)
+      .landlord_id,
+    1,
+  );
+  assert.deepEqual(
+    (await call("/api/properties?landlord_id=1")).json().map((p) => p.name),
+    ["Garden House"],
+  );
+  assert.deepEqual(
+    (await call("/api/properties?landlord_id=2")).json().map((p) => p.name),
+    ["Second Property"],
+  );
+  assert.equal((await call("/api/tenants?landlord_id=1")).json().length, 1);
+  assert.equal((await call("/api/tenants?landlord_id=2")).json().length, 1);
+  assert.equal((await call("/api/invoices?landlord_id=1")).json().total, 0);
+  assert.equal((await call("/api/invoices?landlord_id=2")).json().total, 1);
+  assert.equal(
+    (await call("/api/dashboard?landlord_id=1")).json().properties,
+    1,
+  );
+  assert.equal(
+    (await call("/api/dashboard?landlord_id=2")).json().properties,
+    1,
+  );
+  assert.equal((await call("/api/system?landlord_id=2")).statusCode, 200);
+});
+
+test("version 1 databases migrate the existing profile and records", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "rentfolio-migration-"));
+  const filename = join(directory, "legacy.sqlite");
+  const legacy = new DatabaseSync(filename);
+  legacy.exec(`
+    CREATE TABLE profile (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
+    INSERT INTO profile VALUES(1, '{"name":"Existing Landlord","email":"","phone":"","address":"Vadodara","tax_id":"","payment_details":"","notes":"","currency":"INR","timezone":"Asia/Kolkata","prefix":"OLD"}');
+    CREATE TABLE properties (id INTEGER PRIMARY KEY, name TEXT NOT NULL, address TEXT NOT NULL, unit TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1);
+    INSERT INTO properties(id,name,address) VALUES(7,'Existing Property','Tarsali');
+    CREATE TABLE tenants (id INTEGER PRIMARY KEY, property_id INTEGER NOT NULL REFERENCES properties(id), name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', tax_id TEXT NOT NULL DEFAULT '', rent_cents INTEGER NOT NULL DEFAULT 0, deposit_cents INTEGER NOT NULL DEFAULT 0, lease_start TEXT NOT NULL DEFAULT '', lease_end TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1);
+    INSERT INTO tenants(id,property_id,name) VALUES(8,7,'Existing Tenant');
+    CREATE TABLE invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, tenant_id INTEGER NOT NULL REFERENCES tenants(id), rule_id INTEGER, occurrence TEXT, issue_date TEXT NOT NULL, due_date TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL, snapshot TEXT NOT NULL, items TEXT NOT NULL, notes TEXT NOT NULL, total_cents INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'issued', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(rule_id, occurrence));
+    INSERT INTO invoices(id,number,tenant_id,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents) VALUES(9,'OLD-2025-00009',8,'2025-01-01','2025-01-07','2025-01-01','2025-01-31','{"landlord":{"name":"Existing Landlord","currency":"INR"},"tenant":{"name":"Existing Tenant"},"property":{"name":"Existing Property"}}','[]','',10000);
+    PRAGMA user_version=1;
+  `);
+  legacy.close();
+  const migrated = openDatabase(filename);
+  t.after(() => {
+    migrated.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(getProfile(migrated).name, "Existing Landlord");
+  assert.equal(
+    migrated.prepare("SELECT landlord_id FROM properties WHERE id=7").get()
+      .landlord_id,
+    1,
+  );
+  assert.equal(
+    migrated.prepare("SELECT landlord_id FROM invoices WHERE id=9").get()
+      .landlord_id,
+    1,
+  );
+  assert.equal(
+    JSON.parse(
+      migrated.prepare("SELECT snapshot FROM invoices WHERE id=9").get()
+        .snapshot,
+    ).landlord.name,
+    "Existing Landlord",
+  );
 });
 test("validation and request origin protections", async (t) => {
   const { app, call, input } = await fixture(t);

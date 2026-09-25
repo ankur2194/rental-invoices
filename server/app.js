@@ -6,7 +6,7 @@ import serveStatic from "@fastify/static";
 import { z } from "zod";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { openDatabase, getProfile, transaction } from "./db.js";
+import { openDatabase, getProfile, listProfiles, transaction } from "./db.js";
 import { bootstrap, registerAuth } from "./auth.js";
 import {
   AppError,
@@ -103,23 +103,61 @@ export async function buildApp(options = {}) {
     if (!db.prepare(`SELECT id FROM ${table} WHERE id=?`).get(recordId))
       throw new AppError("Record not found", 404);
   };
+  const selectedLandlord = (req) => {
+    const profileId = z.coerce
+      .number()
+      .int()
+      .positive()
+      .parse(req.query?.landlord_id ?? getProfile(db)?.id);
+    if (!getProfile(db, profileId))
+      throw new AppError("Landlord profile not found", 404);
+    return profileId;
+  };
   app.get("/health", async () => ({
     ok: !!db.prepare("SELECT 1 healthy").get().healthy,
   }));
+  app.get("/api/profiles", async () => listProfiles(db));
+  app.post("/api/profiles", async (req) => {
+    const profile = profileSchema.parse(req.body);
+    const profileId = Number(
+      db
+        .prepare("INSERT INTO landlord_profiles(data) VALUES(?)")
+        .run(JSON.stringify(profile)).lastInsertRowid,
+    );
+    return getProfile(db, profileId);
+  });
+  app.put("/api/profiles/:id", async (req) => {
+    const profileId = id(req);
+    if (!getProfile(db, profileId))
+      throw new AppError("Landlord profile not found", 404);
+    const profile = profileSchema.parse(req.body);
+    db.prepare("UPDATE landlord_profiles SET data=? WHERE id=?").run(
+      JSON.stringify(profile),
+      profileId,
+    );
+    return getProfile(db, profileId);
+  });
+  // Compatibility aliases for clients deployed before multi-profile support.
   app.get("/api/profile", async () => getProfile(db));
   app.put("/api/profile", async (req) => {
     const profile = profileSchema.parse(req.body);
-    db.prepare("UPDATE profile SET data=? WHERE id=1").run(
+    const profileId = getProfile(db).id;
+    db.prepare("UPDATE landlord_profiles SET data=? WHERE id=?").run(
       JSON.stringify(profile),
+      profileId,
     );
-    return profile;
+    return getProfile(db, profileId);
   });
-  app.get("/api/system", async () => ({
+  app.get("/api/system", async (req) => ({
     email_configured: !!mailer,
-    today: todayIn(getProfile(db).timezone),
+    today: todayIn(getProfile(db, selectedLandlord(req)).timezone),
   }));
-  app.get("/api/properties", async () =>
-    db.prepare("SELECT * FROM properties ORDER BY active DESC,name").all(),
+  app.get("/api/properties", async (req) =>
+    db
+      .prepare(
+        "SELECT * FROM properties WHERE landlord_id=? ORDER BY active DESC,name",
+      )
+      .all(selectedLandlord(req)),
   );
   const saveProperty = (req, update) => {
     const p = propertySchema.parse(req.body);
@@ -134,20 +172,27 @@ export async function buildApp(options = {}) {
       id: Number(
         db
           .prepare(
-            "INSERT INTO properties(name,address,unit,notes,active) VALUES(?,?,?,?,?)",
+            "INSERT INTO properties(landlord_id,name,address,unit,notes,active) VALUES(?,?,?,?,?,?)",
           )
-          .run(p.name, p.address, p.unit, p.notes, +p.active).lastInsertRowid,
+          .run(
+            selectedLandlord(req),
+            p.name,
+            p.address,
+            p.unit,
+            p.notes,
+            +p.active,
+          ).lastInsertRowid,
       ),
     };
   };
   app.post("/api/properties", async (req) => saveProperty(req, false));
   app.put("/api/properties/:id", async (req) => saveProperty(req, true));
-  app.get("/api/tenants", async () =>
+  app.get("/api/tenants", async (req) =>
     db
       .prepare(
-        "SELECT t.*,p.name property_name,p.unit FROM tenants t JOIN properties p ON p.id=t.property_id ORDER BY t.active DESC,t.name",
+        "SELECT t.*,p.name property_name,p.unit FROM tenants t JOIN properties p ON p.id=t.property_id WHERE p.landlord_id=? ORDER BY t.active DESC,t.name",
       )
-      .all(),
+      .all(selectedLandlord(req)),
   );
   const saveTenant = (req, update) => {
     const t = tenantSchema.parse(req.body);
@@ -193,9 +238,13 @@ export async function buildApp(options = {}) {
           .enum(["", "unpaid", "paid", "partial", "overdue", "void"])
           .default(""),
         page: z.coerce.number().int().min(1).max(100000).default(1),
+        landlord_id: z.coerce.number().int().positive().optional(),
       })
       .parse(req.query);
-    return listInvoices(db, q);
+    const landlordId = q.landlord_id ?? getProfile(db).id;
+    if (!getProfile(db, landlordId))
+      throw new AppError("Landlord profile not found", 404);
+    return listInvoices(db, { ...q, landlordId });
   });
   app.post("/api/invoices", async (req) => {
     const input = invoiceSchema.parse(req.body);
@@ -269,12 +318,12 @@ export async function buildApp(options = {}) {
     db.prepare("DELETE FROM payments WHERE id=?").run(id(req));
     return { ok: true };
   });
-  app.get("/api/rules", async () =>
+  app.get("/api/rules", async (req) =>
     db
       .prepare(
-        "SELECT r.*,t.name tenant_name,p.name property_name FROM rules r JOIN tenants t ON t.id=r.tenant_id JOIN properties p ON p.id=t.property_id ORDER BY r.active DESC,r.next_date",
+        "SELECT r.*,t.name tenant_name,p.name property_name FROM rules r JOIN tenants t ON t.id=r.tenant_id JOIN properties p ON p.id=t.property_id WHERE p.landlord_id=? ORDER BY r.active DESC,r.next_date",
       )
-      .all()
+      .all(selectedLandlord(req))
       .map((r) => ({ ...r, items: JSON.parse(r.items) })),
   );
   const saveRule = (req, update) => {
@@ -330,13 +379,15 @@ export async function buildApp(options = {}) {
   };
   app.post("/api/rules", async (req) => saveRule(req, false));
   app.put("/api/rules/:id", async (req) => saveRule(req, true));
-  app.post("/api/rules/run", async () => runSchedules(db));
-  app.get("/api/emails", async () =>
+  app.post("/api/rules/run", async (req) =>
+    runSchedules(db, undefined, selectedLandlord(req)),
+  );
+  app.get("/api/emails", async (req) =>
     db
       .prepare(
-        "SELECT e.*,i.number FROM email_jobs e JOIN invoices i ON i.id=e.invoice_id ORDER BY e.id DESC LIMIT 100",
+        "SELECT e.*,i.number FROM email_jobs e JOIN invoices i ON i.id=e.invoice_id WHERE i.landlord_id=? ORDER BY e.id DESC LIMIT 100",
       )
-      .all(),
+      .all(selectedLandlord(req)),
   );
   app.post("/api/emails/:id/retry", async (req) => {
     requireSmtp();
@@ -359,33 +410,42 @@ export async function buildApp(options = {}) {
     ).run(job.id);
     return { ok: true };
   });
-  app.get("/api/dashboard", async () => {
+  app.get("/api/dashboard", async (req) => {
+    const landlordId = selectedLandlord(req);
+    const profile = getProfile(db, landlordId);
     const totals = db
       .prepare(
-        `SELECT json_extract(i.snapshot,'$.landlord.currency') currency,SUM(i.total_cents) billed,SUM(COALESCE(p.paid,0)) collected,SUM(i.total_cents-COALESCE(p.paid,0)) outstanding,SUM(CASE WHEN i.due_date<? THEN i.total_cents-COALESCE(p.paid,0) ELSE 0 END) overdue FROM invoices i LEFT JOIN (SELECT invoice_id,SUM(amount_cents) paid FROM payments GROUP BY invoice_id) p ON p.invoice_id=i.id WHERE i.status!='void' GROUP BY currency`,
+        `SELECT json_extract(i.snapshot,'$.landlord.currency') currency,SUM(i.total_cents) billed,SUM(COALESCE(p.paid,0)) collected,SUM(i.total_cents-COALESCE(p.paid,0)) outstanding,SUM(CASE WHEN i.due_date<? THEN i.total_cents-COALESCE(p.paid,0) ELSE 0 END) overdue FROM invoices i LEFT JOIN (SELECT invoice_id,SUM(amount_cents) paid FROM payments GROUP BY invoice_id) p ON p.invoice_id=i.id WHERE i.status!='void' AND i.landlord_id=? GROUP BY currency`,
       )
-      .all(todayIn(getProfile(db).timezone));
+      .all(todayIn(profile.timezone), landlordId);
     return {
       totals,
-      tenants: db.prepare("SELECT COUNT(*) n FROM tenants WHERE active=1").get()
-        .n,
+      tenants: db
+        .prepare(
+          "SELECT COUNT(*) n FROM tenants t JOIN properties p ON p.id=t.property_id WHERE t.active=1 AND p.landlord_id=?",
+        )
+        .get(landlordId).n,
       properties: db
-        .prepare("SELECT COUNT(*) n FROM properties WHERE active=1")
-        .get().n,
+        .prepare(
+          "SELECT COUNT(*) n FROM properties WHERE active=1 AND landlord_id=?",
+        )
+        .get(landlordId).n,
       active_rules: db
-        .prepare("SELECT COUNT(*) n FROM rules WHERE active=1")
-        .get().n,
+        .prepare(
+          "SELECT COUNT(*) n FROM rules r JOIN tenants t ON t.id=r.tenant_id JOIN properties p ON p.id=t.property_id WHERE r.active=1 AND p.landlord_id=?",
+        )
+        .get(landlordId).n,
       failed_emails: db
         .prepare(
-          "SELECT COUNT(*) n FROM email_jobs WHERE status IN ('failed','uncertain')",
+          "SELECT COUNT(*) n FROM email_jobs e JOIN invoices i ON i.id=e.invoice_id WHERE e.status IN ('failed','uncertain') AND i.landlord_id=?",
         )
-        .get().n,
+        .get(landlordId).n,
       rule_errors: db
         .prepare(
-          "SELECT COUNT(*) n FROM rules WHERE active=1 AND last_error!=''",
+          "SELECT COUNT(*) n FROM rules r JOIN tenants t ON t.id=r.tenant_id JOIN properties p ON p.id=t.property_id WHERE r.active=1 AND r.last_error!='' AND p.landlord_id=?",
         )
-        .get().n,
-      recent: listInvoices(db).items.slice(0, 6),
+        .get(landlordId).n,
+      recent: listInvoices(db, { landlordId }).items.slice(0, 6),
     };
   });
   const root = resolve("dist");
