@@ -318,6 +318,50 @@ test("email attachments are optional, pending requests deduplicate, failures ret
   await call(`/api/invoices/${inv.id}/void`, "POST", {});
   assert.equal(getInvoice(db, inv.id).email_jobs[0].status, "cancelled");
 });
+
+test("email worker logs SMTP acceptance and rejects an unaccepted recipient", async (t) => {
+  const entries = [];
+  const logger = {
+    info: (details, message) =>
+      entries.push({ level: "info", details, message }),
+    warn: (details, message) =>
+      entries.push({ level: "warn", details, message }),
+  };
+  let accepted = false;
+  const mailer = {
+    from: "billing@example.com",
+    transport: {
+      sendMail: async () => ({
+        accepted: accepted ? ["tenant@example.com"] : [],
+        rejected: accepted ? [] : ["tenant@example.com"],
+        response: "250 2.0.0 queued as test-id",
+        messageId: "<test-id@example.com>",
+      }),
+    },
+  };
+  const { db, call, input } = await fixture(t, { mailer });
+  const invoice = (await call("/api/invoices", "POST", input)).json();
+  const url = `/api/invoices/${invoice.id}/email`;
+  await call(url, "POST", {});
+  await processEmailJobs(db, mailer, logger);
+  assert.equal(getInvoice(db, invoice.id).email_jobs[0].status, "pending");
+  assert.match(
+    entries.find((entry) => entry.level === "warn").details.error,
+    /did not accept/,
+  );
+  accepted = true;
+  db.prepare("UPDATE email_jobs SET next_attempt=0 WHERE invoice_id=?").run(
+    invoice.id,
+  );
+  await processEmailJobs(db, mailer, logger);
+  assert.equal(getInvoice(db, invoice.id).email_jobs[0].status, "sent");
+  const success = entries.find((entry) =>
+    entry.message.includes("accepted by SMTP"),
+  );
+  assert.equal(success.details.recipient, "tenant@example.com");
+  assert.equal(success.details.messageId, "<test-id@example.com>");
+  assert.match(success.details.smtpResponse, /queued as test-id/);
+});
 test("password change revokes existing sessions", async (t) => {
   const { call } = await fixture(t);
   assert.equal(

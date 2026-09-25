@@ -19,7 +19,7 @@ export function createMailer(env = process.env) {
     }),
   };
 }
-export async function processEmailJobs(db, mailer) {
+export async function processEmailJobs(db, mailer, logger) {
   if (!mailer) return;
   const jobs = db
     .prepare(
@@ -35,16 +35,28 @@ export async function processEmailJobs(db, mailer) {
         .run(job.id).changes
     )
       continue;
+    logger?.info(
+      {
+        emailJobId: job.id,
+        invoiceId: job.invoice_id,
+        recipient: job.recipient,
+      },
+      "Sending invoice email",
+    );
     try {
       const invoice = getInvoice(db, job.invoice_id);
       if (invoice.status === "void") {
         db.prepare(
           "UPDATE email_jobs SET status='cancelled',error='Invoice voided' WHERE id=?",
         ).run(job.id);
+        logger?.info(
+          { emailJobId: job.id, invoiceId: job.invoice_id },
+          "Invoice email cancelled: invoice voided",
+        );
         continue;
       }
       const pdf = await makePdf(invoice);
-      await mailer.transport.sendMail({
+      const result = await mailer.transport.sendMail({
         from: mailer.from,
         to: job.recipient,
         replyTo: invoice.snapshot.landlord.email || undefined,
@@ -59,9 +71,28 @@ export async function processEmailJobs(db, mailer) {
           },
         ],
       });
+      // SMTP acceptance means the provider took responsibility for delivery;
+      // it does not mean the message reached the recipient's inbox.
+      if (
+        Array.isArray(result?.accepted) &&
+        !result.accepted.some(
+          (address) => address.toLowerCase() === job.recipient.toLowerCase(),
+        )
+      )
+        throw new Error("SMTP did not accept the recipient");
       db.prepare(
         "UPDATE email_jobs SET status='sent',sent_at=CURRENT_TIMESTAMP,error='' WHERE id=?",
       ).run(job.id);
+      logger?.info(
+        {
+          emailJobId: job.id,
+          invoice: invoice.number,
+          recipient: job.recipient,
+          messageId: result?.messageId,
+          smtpResponse: result?.response?.slice(0, 300),
+        },
+        "Invoice email accepted by SMTP (inbox delivery unconfirmed)",
+      );
     } catch (error) {
       const attempts = job.attempts + 1;
       db.prepare(
@@ -71,6 +102,16 @@ export async function processEmailJobs(db, mailer) {
         Date.now() + Math.min(3600000, 60000 * 2 ** attempts),
         String(error.message).slice(0, 500),
         job.id,
+      );
+      logger?.warn(
+        {
+          emailJobId: job.id,
+          invoiceId: job.invoice_id,
+          recipient: job.recipient,
+          attempt: attempts,
+          error: String(error.message).slice(0, 500),
+        },
+        "Invoice email delivery attempt failed",
       );
     }
   }
