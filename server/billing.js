@@ -17,20 +17,20 @@ export function tenantContext(db, id) {
     .get(tenant.property_id);
   return { tenant, property };
 }
-export function queueEmail(db, invoiceId) {
+export function queueEmail(db, invoiceId, recipientOverride) {
   const invoice = getInvoice(db, invoiceId);
   if (invoice.status === "void")
     throw new AppError("Void invoices cannot be emailed");
-  const recipient = invoice.snapshot.tenant.email;
+  const recipient = recipientOverride ?? invoice.snapshot.tenant.email;
   if (!recipient)
     throw new AppError(
       "This invoice has no tenant email. Add an email before creating a new invoice.",
     );
   const existing = db
     .prepare(
-      "SELECT id FROM email_jobs WHERE invoice_id=? AND status IN ('pending','sending')",
+      "SELECT id FROM email_jobs WHERE invoice_id=? AND recipient=? COLLATE NOCASE AND status IN ('pending','sending')",
     )
-    .get(invoiceId);
+    .get(invoiceId, recipient);
   if (existing) return existing.id;
   return Number(
     db

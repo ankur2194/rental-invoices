@@ -80,13 +80,11 @@ export async function buildApp(options = {}) {
   await registerAuth(app, db, config);
   app.setErrorHandler((error, req, reply) => {
     if (error instanceof z.ZodError)
-      return reply
-        .code(400)
-        .send({
-          error: error.issues
-            .map((i) => `${i.path.join(".") || "Input"}: ${i.message}`)
-            .join("; "),
-        });
+      return reply.code(400).send({
+        error: error.issues
+          .map((i) => `${i.path.join(".") || "Input"}: ${i.message}`)
+          .join("; "),
+      });
     if (error.statusCode && error.statusCode < 500)
       return reply.code(error.statusCode).send({ error: error.message });
     req.log.error(error);
@@ -214,7 +212,13 @@ export async function buildApp(options = {}) {
   });
   app.post("/api/invoices/:id/email", async (req) => {
     requireSmtp();
-    return { id: queueEmail(db, id(req)) };
+    const { recipient } = z
+      .object({
+        recipient: z.string().trim().max(254).email().optional(),
+      })
+      .strict()
+      .parse(req.body ?? {});
+    return { id: queueEmail(db, id(req), recipient) };
   });
   app.post("/api/invoices/:id/void", async (req) =>
     transaction(db, () => {
