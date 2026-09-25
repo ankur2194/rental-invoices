@@ -954,7 +954,7 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
                   <h3>
                     {inv.snapshot.property.name} {inv.snapshot.property.unit}
                   </h3>
-                  <p>{inv.snapshot.property.address}</p>
+                  <p class="preserve">{inv.snapshot.property.address}</p>
                 </div>
               </div>
               <div class="paper-dates">
