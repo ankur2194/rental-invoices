@@ -192,7 +192,7 @@ docker compose up -d --force-recreate
 pm2 restart rental-invoices --update-env
 ```
 
-Enabling SMTP alone does **not** send invoices. Select the optional email checkbox when creating an invoice or recurring schedule, or click **Send email** on an invoice. The recipient comes from the tenant snapshot saved with that invoice. The landlord contact email is the reply-to address; `SMTP_FROM` is the sender your SMTP provider authorizes.
+Enabling SMTP alone does **not** send invoices. Select the optional email checkbox when creating an invoice or recurring schedule, or click **Send email** on an invoice. The **Send email** recipient comes from the tenant snapshot saved with that invoice. Choose **Send email to…** to enter another recipient and send the PDF to that address instead, even when the invoice has no tenant email. This does not change the saved tenant email or recurring billing settings. The recipient appears in email history. Pending sends to the same address are deduplicated; different recipients receive separate deliveries. The landlord contact email is the reply-to address; `SMTP_FROM` is the sender your SMTP provider authorizes.
 
 The queue processes up to five emails per minute. Failures retry with exponential backoff, up to five attempts. Failed deliveries can be retried in **Email delivery**. If the server restarts while a message is being sent, the delivery is marked **uncertain** rather than blindly resent; check whether the tenant received it before retrying. SMTP acceptance does not confirm inbox delivery, and SMTP cannot guarantee exactly-once delivery. No tracking pixels or email-open tracking are included.
 

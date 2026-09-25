@@ -340,3 +340,75 @@ test("password change revokes existing sessions", async (t) => {
   );
   assert.equal((await call("/api/me")).statusCode, 401);
 });
+
+test("custom email recipients validate, deduplicate per address and preserve tenant data", async (t) => {
+  const sent = [];
+  const mailer = {
+    from: "billing@example.com",
+    transport: { sendMail: async (message) => sent.push(message) },
+  };
+  const { db, call, input, tenant } = await fixture(t, { mailer });
+  const inv = (await call("/api/invoices", "POST", input)).json();
+  const url = `/api/invoices/${inv.id}/email`;
+  for (const recipient of [
+    "",
+    "invalid",
+    "a@example.com,b@example.com",
+    "a@example.com\r\nBcc: b@example.com",
+    null,
+  ]) {
+    assert.equal((await call(url, "POST", { recipient })).statusCode, 400);
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_jobs").get().n, 0);
+  const original = (await call(url, "POST", {})).json();
+  const custom = (
+    await call(url, "POST", { recipient: " accounts@example.com " })
+  ).json();
+  assert.notEqual(custom.id, original.id);
+  assert.equal(
+    (await call(url, "POST", { recipient: "accounts@example.com" })).json().id,
+    custom.id,
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM email_jobs").get().n, 2);
+  await processEmailJobs(db, mailer);
+  assert.deepEqual(
+    sent.map((m) => m.to),
+    ["tenant@example.com", "accounts@example.com"],
+  );
+  assert.ok(
+    sent.every(
+      (m) => m.attachments[0].content.subarray(0, 5).toString() === "%PDF-",
+    ),
+  );
+  assert.equal(
+    getInvoice(db, inv.id).snapshot.tenant.email,
+    "tenant@example.com",
+  );
+  assert.equal(
+    db.prepare("SELECT email FROM tenants WHERE id=?").get(tenant.id).email,
+    "tenant@example.com",
+  );
+  db.prepare("UPDATE tenants SET email='' WHERE id=?").run(tenant.id);
+  const noEmail = (await call("/api/invoices", "POST", input)).json();
+  assert.equal(
+    (await call(`/api/invoices/${noEmail.id}/email`, "POST", {})).statusCode,
+    400,
+  );
+  assert.equal(
+    (
+      await call(`/api/invoices/${noEmail.id}/email`, "POST", {
+        recipient: "owner@example.com",
+      })
+    ).statusCode,
+    200,
+  );
+  await call(`/api/invoices/${noEmail.id}/void`, "POST", {});
+  assert.equal(
+    (
+      await call(`/api/invoices/${noEmail.id}/email`, "POST", {
+        recipient: "owner@example.com",
+      })
+    ).statusCode,
+    400,
+  );
+});

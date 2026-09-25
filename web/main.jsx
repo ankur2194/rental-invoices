@@ -854,6 +854,8 @@ function BillingEditor({
 function InvoiceDetail({ id, onClose, onChange, system, notify }) {
   const [inv, setInv] = useState(null),
     [error, setError] = useState(""),
+    [emailDialog, setEmailDialog] = useState(false),
+    [recipient, setRecipient] = useState(""),
     [busy, setBusy] = useState(false),
     [payment, setPayment] = useState({
       amount: "",
@@ -878,6 +880,41 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
       setBusy(false);
     }
   };
+  if (emailDialog)
+    return (
+      <Modal
+        title="Send email to…"
+        subtitle={inv?.number}
+        onClose={() => setEmailDialog(false)}
+      >
+        <FormShell
+          label="Send email"
+          onClose={() => setEmailDialog(false)}
+          onSubmit={async () => {
+            const address = recipient.trim();
+            await api(`/invoices/${id}/email`, "POST", { recipient: address });
+            setEmailDialog(false);
+            notify(`Email queued for ${address}`);
+            reload().catch((e) => setError(e.message));
+            onChange();
+          }}
+        >
+          <Field
+            label="Recipient email address"
+            type="email"
+            required
+            maxLength={254}
+            autoFocus
+            value={recipient}
+            onInput={(e) => setRecipient(e.target.value)}
+          />
+          <p class="muted">
+            Send this invoice PDF to the entered address. The tenant’s saved
+            email and recurring billing settings will stay the same.
+          </p>
+        </FormShell>
+      </Modal>
+    );
   return (
     <Modal
       large
@@ -896,7 +933,10 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
               <Button
                 secondary
                 disabled={
-                  busy || !system.email_configured || inv.status === "void"
+                  busy ||
+                  !system.email_configured ||
+                  inv.status === "void" ||
+                  !inv.snapshot.tenant.email
                 }
                 icon="email"
                 onClick={() =>
@@ -907,6 +947,18 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
                 }
               >
                 Send email
+              </Button>
+              <Button
+                secondary
+                disabled={
+                  busy || !system.email_configured || inv.status === "void"
+                }
+                onClick={() => {
+                  setRecipient("");
+                  setEmailDialog(true);
+                }}
+              >
+                Send email to…
               </Button>
               {inv.status !== "void" && (
                 <button
