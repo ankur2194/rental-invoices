@@ -254,6 +254,93 @@ test("multiple landlord profiles isolate portfolios and invoice identity", async
   assert.equal((await call("/api/system?landlord_id=2")).statusCode, 200);
 });
 
+test("recreating an invoice voids the original and snapshots current records", async (t) => {
+  const { call, input, profile, property, tenant } = await fixture(t);
+  const original = (await call("/api/invoices", "POST", input)).json();
+  await call("/api/profiles/1", "PUT", {
+    ...profile,
+    name: "Updated Landlord",
+    address: "Updated landlord address",
+  });
+  await call(`/api/properties/${property.id}`, "PUT", {
+    name: "Updated Property",
+    address: "Updated property address",
+    unit: "Second floor",
+    notes: "",
+    active: true,
+  });
+  await call(`/api/tenants/${tenant.id}`, "PUT", {
+    property_id: property.id,
+    name: "Updated Tenant",
+    email: "updated-tenant@example.com",
+    phone: "",
+    address: "Updated billing address",
+    tax_id: "",
+    rent: "12000",
+    deposit: "0",
+    lease_start: "2024-01-01",
+    lease_end: "",
+    notes: "",
+    active: true,
+  });
+  const response = await call(
+    `/api/invoices/${original.id}/recreate`,
+    "POST",
+    {},
+  );
+  assert.equal(response.statusCode, 200, response.body);
+  const replacement = response.json();
+  assert.notEqual(replacement.id, original.id);
+  assert.notEqual(replacement.number, original.number);
+  assert.equal(replacement.recreated_from.id, original.id);
+  assert.equal(replacement.snapshot.landlord.name, "Updated Landlord");
+  assert.equal(replacement.snapshot.tenant.name, "Updated Tenant");
+  assert.equal(replacement.snapshot.property.name, "Updated Property");
+  assert.equal(replacement.total_cents, original.total_cents);
+  assert.deepEqual(
+    [
+      replacement.issue_date,
+      replacement.due_date,
+      replacement.period_start,
+      replacement.period_end,
+    ],
+    [
+      original.issue_date,
+      original.due_date,
+      original.period_start,
+      original.period_end,
+    ],
+  );
+  assert.equal(replacement.email_jobs.length, 0);
+  const old = (await call(`/api/invoices/${original.id}`)).json();
+  assert.equal(old.status, "void");
+  assert.equal(old.snapshot.landlord.name, "Test Landlord");
+  assert.equal(old.snapshot.tenant.name, "Test Tenant");
+  assert.equal(old.snapshot.property.name, "Garden House");
+  assert.equal(old.replacement.id, replacement.id);
+  assert.equal(
+    (await call(`/api/invoices/${original.id}/recreate`, "POST", {})).json().id,
+    replacement.id,
+  );
+  const dashboard = (await call("/api/dashboard?landlord_id=1")).json();
+  assert.equal(dashboard.totals[0].billed, replacement.total_cents);
+
+  const paid = (await call("/api/invoices", "POST", input)).json();
+  await call(`/api/invoices/${paid.id}/payments`, "POST", {
+    amount: "1",
+    date: paid.issue_date,
+    reference: "Test",
+  });
+  assert.equal(
+    (await call(`/api/invoices/${paid.id}/recreate`, "POST", {})).statusCode,
+    400,
+  );
+  assert.equal(
+    (await call(`/api/invoices/${paid.id}`)).json().status,
+    "issued",
+  );
+});
+
 test("version 1 databases migrate the existing profile and records", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "rentfolio-migration-"));
   const filename = join(directory, "legacy.sqlite");
@@ -275,7 +362,7 @@ test("version 1 databases migrate the existing profile and records", (t) => {
     migrated.close();
     rmSync(directory, { recursive: true, force: true });
   });
-  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 3);
   assert.equal(getProfile(migrated).name, "Existing Landlord");
   assert.equal(
     migrated.prepare("SELECT landlord_id FROM properties WHERE id=7").get()
@@ -294,6 +381,39 @@ test("version 1 databases migrate the existing profile and records", (t) => {
     ).landlord.name,
     "Existing Landlord",
   );
+  assert.equal(
+    migrated.prepare("SELECT recreated_from_id FROM invoices WHERE id=9").get()
+      .recreated_from_id,
+    null,
+  );
+});
+
+test("version 2 multi-profile databases gain recreation links safely", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "rentfolio-v2-migration-"));
+  const filename = join(directory, "version-2.sqlite");
+  const legacy = new DatabaseSync(filename);
+  legacy.exec(`
+    CREATE TABLE landlord_profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL);
+    INSERT INTO landlord_profiles VALUES(4, '{"name":"Existing Profile","currency":"INR","timezone":"Asia/Kolkata","prefix":"INV"}');
+    CREATE TABLE properties (id INTEGER PRIMARY KEY, name TEXT NOT NULL, address TEXT NOT NULL, unit TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, landlord_id INTEGER REFERENCES landlord_profiles(id));
+    INSERT INTO properties(id,name,address,landlord_id) VALUES(7,'Existing Property','Tarsali',4);
+    CREATE TABLE tenants (id INTEGER PRIMARY KEY, property_id INTEGER NOT NULL REFERENCES properties(id), name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', tax_id TEXT NOT NULL DEFAULT '', rent_cents INTEGER NOT NULL DEFAULT 0, deposit_cents INTEGER NOT NULL DEFAULT 0, lease_start TEXT NOT NULL DEFAULT '', lease_end TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1);
+    INSERT INTO tenants(id,property_id,name) VALUES(8,7,'Existing Tenant');
+    CREATE TABLE invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT UNIQUE, tenant_id INTEGER NOT NULL REFERENCES tenants(id), rule_id INTEGER, occurrence TEXT, issue_date TEXT NOT NULL, due_date TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL, snapshot TEXT NOT NULL, items TEXT NOT NULL, notes TEXT NOT NULL, total_cents INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'issued', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, landlord_id INTEGER REFERENCES landlord_profiles(id), UNIQUE(rule_id, occurrence));
+    INSERT INTO invoices(id,number,tenant_id,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents,landlord_id) VALUES(9,'INV-2026-00009',8,'2026-01-01','2026-01-07','2026-01-01','2026-01-31','{"landlord":{"name":"Existing Profile","currency":"INR"},"tenant":{"name":"Existing Tenant"},"property":{"name":"Existing Property"}}','[]','',10000,4);
+    PRAGMA user_version=2;
+  `);
+  legacy.close();
+  const migrated = openDatabase(filename);
+  t.after(() => {
+    migrated.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 3);
+  const invoice = migrated.prepare("SELECT * FROM invoices WHERE id=9").get();
+  assert.equal(invoice.landlord_id, 4);
+  assert.equal(invoice.recreated_from_id, null);
+  assert.equal(invoice.number, "INV-2026-00009");
 });
 test("validation and request origin protections", async (t) => {
   const { app, call, input } = await fixture(t);
@@ -435,49 +555,6 @@ test("email attachments are optional, pending requests deduplicate, failures ret
   assert.equal(getInvoice(db, inv.id).email_jobs[0].status, "cancelled");
 });
 
-test("email worker logs SMTP acceptance and rejects an unaccepted recipient", async (t) => {
-  const entries = [];
-  const logger = {
-    info: (details, message) =>
-      entries.push({ level: "info", details, message }),
-    warn: (details, message) =>
-      entries.push({ level: "warn", details, message }),
-  };
-  let accepted = false;
-  const mailer = {
-    from: "billing@example.com",
-    transport: {
-      sendMail: async () => ({
-        accepted: accepted ? ["tenant@example.com"] : [],
-        rejected: accepted ? [] : ["tenant@example.com"],
-        response: "250 2.0.0 queued as test-id",
-        messageId: "<test-id@example.com>",
-      }),
-    },
-  };
-  const { db, call, input } = await fixture(t, { mailer });
-  const invoice = (await call("/api/invoices", "POST", input)).json();
-  const url = `/api/invoices/${invoice.id}/email`;
-  await call(url, "POST", {});
-  await processEmailJobs(db, mailer, logger);
-  assert.equal(getInvoice(db, invoice.id).email_jobs[0].status, "pending");
-  assert.match(
-    entries.find((entry) => entry.level === "warn").details.error,
-    /did not accept/,
-  );
-  accepted = true;
-  db.prepare("UPDATE email_jobs SET next_attempt=0 WHERE invoice_id=?").run(
-    invoice.id,
-  );
-  await processEmailJobs(db, mailer, logger);
-  assert.equal(getInvoice(db, invoice.id).email_jobs[0].status, "sent");
-  const success = entries.find((entry) =>
-    entry.message.includes("accepted by SMTP"),
-  );
-  assert.equal(success.details.recipient, "tenant@example.com");
-  assert.equal(success.details.messageId, "<test-id@example.com>");
-  assert.match(success.details.smtpResponse, /queued as test-id/);
-});
 test("password change revokes existing sessions", async (t) => {
   const { call } = await fixture(t);
   assert.equal(

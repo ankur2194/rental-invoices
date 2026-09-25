@@ -24,6 +24,7 @@ A small, self-hosted portal for managing one or more landlord identities from a 
 - The same PDF renderer serves downloads and optional email attachments. Previously issued invoices use the updated layout when downloaded again; their stored billing details are unchanged.
 - Optional manual email or automatic email with PDF attached; delivery history, failures and retry controls.
 - Partial/full payment recording, correction of payment records, overdue tracking, search and status filtering.
+- Invoice recreation: replace an unpaid invoice using the latest landlord, tenant and property records while preserving its dates, charges and notes.
 - Historical snapshots: changing a tenant, property, currency or landlord profile never rewrites issued invoice details.
 - Docker configuration, health check, online backup and password-recovery scripts, automated tests and GitHub Actions CI.
 
@@ -162,7 +163,7 @@ pm2 save
 
 After changing only `.env`, run `pm2 restart rental-invoices --update-env`. Environment values already exported in the shell or PM2 take precedence over `.env`; avoid conflicting definitions. Preserve the data directory and `.env` during updates.
 
-When upgrading from a single-profile release, take a backup before stopping the old process. The first start of this version runs a transactional SQLite migration: the existing landlord becomes the first profile, every existing property and invoice is assigned to it, and tenant, payment, recurring schedule, email and historical invoice-snapshot data remain unchanged. No manual SQL or new environment variable is required.
+When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The recreation update only adds a nullable link between original and replacement invoices. Tenant, payment, recurring schedule, email, invoice-number and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
 
 To create a consistent backup from the project root:
 
@@ -199,8 +200,6 @@ Enabling SMTP alone does **not** send invoices. Select the optional email checkb
 
 The queue processes up to five emails per minute. Failures retry with exponential backoff, up to five attempts. Failed deliveries can be retried in **Email delivery**. If the server restarts while a message is being sent, the delivery is marked **uncertain** rather than blindly resent; check whether the tenant received it before retrying. SMTP acceptance does not confirm inbox delivery, and SMTP cannot guarantee exactly-once delivery. No tracking pixels or email-open tracking are included.
 
-To inspect email delivery attempts on PM2, run `pm2 logs rental-invoices --lines 100 --timestamp`. The application records the invoice number, recipient, job ID, SMTP response and message ID when the SMTP provider accepts the message; failures show the attempt and error. Filter recent output with `pm2 logs rental-invoices --lines 200 --nostream | grep 'Invoice email'`. These entries appear after deploying this version. If a job says **sent** but no message arrives, confirm the recipient address in **Email delivery**, check spam/junk and your SMTP provider's delivery or bounce logs using the message ID. The app cannot confirm final inbox delivery, and retrying a **sent** job may send a duplicate if the provider delivered it later.
-
 ## First-use workflow
 
 1. Complete the migrated/default profile under **Landlord profiles**, or add another profile. Each profile has its own payment instructions, currency, prefix and time zone.
@@ -209,6 +208,8 @@ To inspect email delivery attempts on PM2, run `pm2 logs rental-invoices --lines
 4. Use **Create invoice** for a one-off bill, or **Recurring Billing → Create recurring schedule** to set up recurring rent.
 5. Add electricity/maintenance/tax as additional invoice items or independent schedules. For metered electricity, enter consumed units as quantity and the unit price as rate.
 6. Open an invoice to **Download PDF**, optionally **Send email**, or **Record payment**.
+
+Use **Recreate invoice** when landlord, tenant or property details have changed after an invoice was issued. The portal voids the unpaid original, keeps its historical snapshot, and creates a replacement with a new invoice number and current records. Dates, line items and invoice notes are copied. Email is not sent automatically. Remove any recorded payments first; an invoice with a delivery currently in progress cannot be recreated until that attempt finishes.
 
 Saving a tenant's default rent does not itself enable recurring billing: create and activate a schedule explicitly. Changing default rent also does not silently change existing schedules; edit their item rates when rent increases.
 

@@ -24,6 +24,7 @@ import {
 import {
   tenantContext,
   createInvoice,
+  recreateInvoice,
   getInvoice,
   listInvoices,
   queueEmail,
@@ -251,6 +252,9 @@ export async function buildApp(options = {}) {
     if (input.auto_email) requireSmtp();
     return createInvoice(db, input);
   });
+  app.post("/api/invoices/:id/recreate", async (req) =>
+    recreateInvoice(db, id(req)),
+  );
   app.get("/api/invoices/:id", async (req) => getInvoice(db, id(req)));
   app.get("/api/invoices/:id/pdf", async (req, reply) => {
     const inv = getInvoice(db, id(req));
@@ -465,7 +469,7 @@ export async function buildApp(options = {}) {
     running = true;
     try {
       runSchedules(db);
-      await processEmailJobs(db, mailer, app.log);
+      await processEmailJobs(db, mailer);
       db.prepare("DELETE FROM sessions WHERE expires<?").run(Date.now());
     } catch (e) {
       app.log.error(e);
