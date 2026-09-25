@@ -70,7 +70,108 @@ The named `rental_data` volume persists the SQLite database across container rep
 
 `HOST_PORT` controls the exported host port; `PORT` controls the internal application port. No nginx container is included. The app runs as the unprivileged `node` user, with a read-only root filesystem and dropped Linux capabilities. Start with a small VPS/container allocation and measure your workload; no fixed resource limit is imposed.
 
-### Optional SMTP email
+## Production with PM2 (without Docker)
+
+The portal can run directly on your server with PM2. Install **Node.js 24 with npm**, **PM2**, and the project dependencies. SQLite is built into Node.js; no database server, Redis, external cron service, Chromium or native SQLite library is needed. Your existing nginx can handle HTTPS.
+
+### Install and build
+
+Run the application as a regular deployment user with write access to its data directory. On Ubuntu/Debian, install the recommended PDF fonts:
+
+```sh
+sudo apt update
+sudo apt install fonts-dejavu-core
+npm install -g pm2
+```
+
+The fonts provide the default PDF typefaces and common symbols. Other languages may need compatible font files configured through `PDF_FONT_REGULAR` and `PDF_FONT_BOLD`.
+
+Clone the repository if needed, or enter your existing checkout:
+
+```sh
+git clone https://github.com/ankur2194/rental-invoices.git
+cd rental-invoices
+# Only while the implementation PR is unmerged:
+git checkout codex/rental-portal
+npm ci --include=dev
+npm run build
+# For a fresh installation only; do not overwrite an existing .env:
+cp .env.example .env
+```
+
+Build dependencies are required for `npm run build`; they do not run as separate services.
+
+### Configure the environment
+
+Edit `.env` in the project root:
+
+```dotenv
+NODE_ENV=production
+APP_URL=https://rent.your-domain.com
+PORT=3080
+COOKIE_SECURE=true
+DB_PATH=./data/rental.sqlite
+ADMIN_EMAIL=you@example.com
+ADMIN_PASSWORD=your-unique-long-random-password
+TRUST_PROXY=127.0.0.1
+SMTP_HOST=
+SMTP_FROM=
+```
+
+`TRUST_PROXY=127.0.0.1` assumes nginx connects from the same host over IPv4 loopback. Adjust it to the actual trusted proxy address if different. Use a unique password of at least 12 characters; administrator credentials only initialize an empty database. Leave SMTP empty for PDF-only use.
+
+Use `PORT` for PM2 deployments. `HOST_PORT` and `BIND_ADDRESS` are Docker Compose settings and have no effect here. The application listens on all interfaces, so restrict direct access to that port with your server firewall and serve the portal through nginx. Point your existing HTTPS nginx configuration to `http://127.0.0.1:3080`, forwarding `Host`, `X-Forwarded-For` and `X-Forwarded-Proto`. The browser origin must match `APP_URL`.
+
+The data directory is created automatically and must be writable by the deployment user. The relative `DB_PATH` is resolved from the project directory; use an absolute path if you move or replace deployment directories. Keep `.env` and the data directory private to that user.
+
+### Start and enable reboot recovery
+
+From the project root:
+
+```sh
+pm2 start npm --name rental-invoices --kill-timeout 60000 -- start
+pm2 status
+pm2 logs rental-invoices
+```
+
+The npm start script loads `.env` automatically. Run **one instance in fork mode only**; do not enable cluster mode, `-i max`, or a second Docker instance against the same database. Recurring billing and the optional email queue run inside this process.
+
+Enable startup recovery:
+
+```sh
+pm2 startup
+# Execute the system-specific command printed by PM2, then:
+pm2 save
+```
+
+Run PM2 commands as the same deployment user. If you upgrade Node.js or change its installation path, regenerate PM2's startup configuration as described in the [PM2 startup documentation](https://pm2.keymetrics.io/docs/usage/startup/).
+
+### Updates and maintenance
+
+For a simple deployment with a short maintenance window:
+
+```sh
+pm2 stop rental-invoices
+git pull --ff-only
+npm ci --include=dev
+npm run build
+# Restart only after installation and build succeed:
+pm2 restart rental-invoices --update-env
+pm2 save
+```
+
+After changing only `.env`, run `pm2 restart rental-invoices --update-env`. Environment values already exported in the shell or PM2 take precedence over `.env`; avoid conflicting definitions. Preserve the data directory and `.env` during updates.
+
+To create a consistent backup from the project root:
+
+```sh
+mkdir -p backups
+npm run backup -- ./backups/rental-backup.sqlite
+```
+
+Use timestamped filenames for successive backups. For password recovery, use `npm run reset-password -- you@example.com < /secure/new-password.txt`. Both scripts load `.env`; see the backup and recovery sections below for data-handling details.
+
+## Optional SMTP email
 
 Leave `SMTP_HOST` and `SMTP_FROM` empty for a PDF-only portal. To enable email, configure:
 
@@ -83,10 +184,13 @@ SMTP_PASSWORD=your-smtp-password
 SMTP_FROM=Your Property Office <billing@example.com>
 ```
 
-Port 587 uses required STARTTLS. For implicit TLS on port 465 set `SMTP_SECURE=true`. Certificates are verified. Restart/recreate the container after environment changes:
+Port 587 uses required STARTTLS. For implicit TLS on port 465 set `SMTP_SECURE=true`. Certificates are verified. Restart the application after environment changes using the command for your deployment:
 
 ```sh
+# Docker:
 docker compose up -d --force-recreate
+# Or PM2:
+pm2 restart rental-invoices --update-env
 ```
 
 Enabling SMTP alone does **not** send invoices. Select the optional email checkbox when creating an invoice or recurring schedule, or click **Send email** on an invoice. The recipient comes from the tenant snapshot saved with that invoice. The landlord contact email is the reply-to address; `SMTP_FROM` is the sender your SMTP provider authorizes.
