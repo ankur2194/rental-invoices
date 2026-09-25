@@ -1,0 +1,28 @@
+name: Verify portal
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Build production image
+        run: docker build -t rental-invoices:test .
+      - name: Smoke-test container
+        run: |
+          docker run -d --name rental-test -p 127.0.0.1:3080:3000 -e ADMIN_EMAIL=ci@example.com -e ADMIN_PASSWORD=ci-only-test-password -e APP_URL=https://example.com -e COOKIE_SECURE=true rental-invoices:test
+          for attempt in $(seq 1 30); do
+            if curl --fail http://127.0.0.1:3080/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs rental-test
+          exit 1
