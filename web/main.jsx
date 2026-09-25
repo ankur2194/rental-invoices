@@ -931,10 +931,8 @@ function InvoiceDetail({ id, onClose, onChange, system, notify }) {
             <article class="invoice-paper">
               <div class="paper-top">
                 <div>
-                  <span class="eyebrow">
-                    {inv.status === "void" ? "VOID INVOICE" : "INVOICE"}
-                  </span>
-                  <h2>{inv.number}</h2>
+                  <h2>{inv.status === "void" ? "VOID INVOICE" : "INVOICE"}</h2>
+                  <p class="invoice-number">{inv.number}</p>
                 </div>
                 <div class="right">
                   <b>{inv.snapshot.landlord.name}</b>

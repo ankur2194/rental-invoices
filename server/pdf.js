@@ -130,7 +130,7 @@ export function makePdf(invoice) {
       };
       const compactHeader = () => {
         text(
-          invoice.status === "void" ? "VOID INVOICE" : "RENTAL INVOICE",
+          invoice.status === "void" ? "VOID INVOICE" : "INVOICE",
           left,
           35,
           220,
@@ -168,7 +168,7 @@ export function makePdf(invoice) {
           .flatMap((p) => wrap(p.value, w, p.style || style()));
       // Branded heading and clear payable amount, independent of text length.
       text(
-        invoice.status === "void" ? "VOID INVOICE" : "RENTAL INVOICE",
+        invoice.status === "void" ? "VOID INVOICE" : "INVOICE",
         left,
         y,
         300,

@@ -1096,7 +1096,11 @@ code {
   margin: 8px 0;
 }
 .paper-top h2 {
-  font-size: 21px;
+  font-size: 28px;
+}
+.paper-top .invoice-number {
+  font-size: 14px;
+  color: var(--muted);
 }
 .paper-top .right {
   text-align: right;
@@ -1507,7 +1511,7 @@ code {
     gap: 20px;
   }
   .paper-top h2 {
-    font-size: 18px;
+    font-size: 24px;
   }
   .settings-grid aside {
     grid-template-columns: 1fr;
