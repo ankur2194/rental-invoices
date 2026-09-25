@@ -24,8 +24,8 @@ A small, self-hosted portal for managing one or more landlord identities from a 
 - The same PDF renderer serves downloads and optional email attachments. Previously issued invoices use the updated layout when downloaded again; their stored billing details are unchanged.
 - Optional manual email or automatic email with PDF attached; delivery history, failures and retry controls.
 - Partial/full payment recording, correction of payment records, overdue tracking, search and status filtering.
-- Invoice recreation: replace an unpaid invoice using the latest landlord, tenant and property records while preserving its dates, charges and notes.
-- Historical snapshots: changing a tenant, property, currency or landlord profile never rewrites issued invoice details.
+- Invoice editing: update dates, tenant, charges and notes on the same invoice number while refreshing its landlord, tenant and property snapshot from current records.
+- Historical snapshots: changing a tenant, property, currency or landlord profile does not silently rewrite issued invoices; details refresh only when an invoice is explicitly edited.
 - Docker configuration, health check, online backup and password-recovery scripts, automated tests and GitHub Actions CI.
 
 ## Production with Docker
@@ -163,7 +163,7 @@ pm2 save
 
 After changing only `.env`, run `pm2 restart rental-invoices --update-env`. Environment values already exported in the shell or PM2 take precedence over `.env`; avoid conflicting definitions. Preserve the data directory and `.env` during updates.
 
-When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The recreation update only adds a nullable link between original and replacement invoices. Tenant, payment, recurring schedule, email, invoice-number and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
+When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The invoice-editing migration removes the obsolete recreation link only; any original and replacement invoices already created by the previous release remain intact. Tenant, payment, recurring schedule, email, invoice-number and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
 
 To create a consistent backup from the project root:
 
@@ -209,7 +209,7 @@ The queue processes up to five emails per minute. Failures retry with exponentia
 5. Add electricity/maintenance/tax as additional invoice items or independent schedules. For metered electricity, enter consumed units as quantity and the unit price as rate.
 6. Open an invoice to **Download PDF**, optionally **Send email**, or **Record payment**.
 
-Use **Recreate invoice** when landlord, tenant or property details have changed after an invoice was issued. The portal voids the unpaid original, keeps its historical snapshot, and creates a replacement with a new invoice number and current records. Dates, line items and invoice notes are copied. Email is not sent automatically. Remove any recorded payments first; an invoice with a delivery currently in progress cannot be recreated until that attempt finishes.
+Use **Edit invoice** to correct dates, charges, notes or the selected tenant. Saving updates the same invoice and invoice number, and refreshes its landlord, tenant and property details from current records. Payments and email history remain attached. The new total cannot be lower than recorded payments, void invoices cannot be edited, and editing waits for any email delivery currently in progress. Saving does not send email automatically.
 
 Saving a tenant's default rent does not itself enable recurring billing: create and activate a schedule explicitly. Changing default rent also does not silently change existing schedules; edit their item rates when rent increases.
 
@@ -318,7 +318,7 @@ npm run check       # backend/domain integration tests + production frontend bui
 npm audit          # dependency vulnerability report
 ```
 
-Tests cover authentication/request protections, immutable invoice snapshots, PDF downloads, payments and voiding, optional SMTP queue behavior, month-end/leap-year schedules, catch-up idempotency and archived/ended leases. Email tests use an in-memory fake SMTP transport and do not send messages. GitHub Actions additionally builds and smoke-tests the Docker image. Docker itself must be available to run container tests locally.
+Tests cover authentication/request protections, invoice snapshot refreshes, PDF downloads, payments and voiding, optional SMTP queue behavior, month-end/leap-year schedules, catch-up idempotency and archived/ended leases. Email tests use an in-memory fake SMTP transport and do not send messages. GitHub Actions additionally builds and smoke-tests the Docker image. Docker itself must be available to run container tests locally.
 
 ## Structure
 

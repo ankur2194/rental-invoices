@@ -34,7 +34,7 @@ export function cents(amount) {
   const [whole, fraction = ""] = s.split(".");
   return Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
 }
-export const itemSchema = z.object({
+const itemSchema = z.object({
   title: short.min(1),
   description: long.default(""),
   category: z
@@ -60,7 +60,7 @@ export const itemSchema = z.object({
     ),
   rate: money,
 });
-export const itemsSchema = z.array(itemSchema).min(1).max(30);
+const itemsSchema = z.array(itemSchema).min(1).max(30);
 export const profileSchema = z.object({
   name: short.min(1),
   email,

@@ -660,7 +660,18 @@ function BillingEditor({
   const first = tenants.find((t) => t.active);
   const [data, setData] = useState(
     record
-      ? { ...record, active: !!record.active, auto_email: !!record.auto_email }
+      ? {
+          ...record,
+          items:
+            !rule && record.items
+              ? record.items.map((item) => ({
+                  ...item,
+                  rate: (item.rate_cents / 100).toFixed(2),
+                }))
+              : record.items,
+          active: !!record.active,
+          auto_email: !!record.auto_email,
+        }
       : {
           tenant_id: first?.id || "",
           issue_date: today,
@@ -693,18 +704,24 @@ function BillingEditor({
           ? record
             ? "Edit recurring schedule"
             : "Create recurring schedule"
-          : "Create an invoice"
+          : record
+            ? `Edit ${record.number}`
+            : "Create an invoice"
       }
       subtitle={
         rule
           ? "Set it once. We’ll create invoices when they’re due."
-          : "Rent, utilities, maintenance and other property charges."
+          : record
+            ? "Update this invoice and refresh its saved contact and property details."
+            : "Rent, utilities, maintenance and other property charges."
       }
       onClose={onClose}
     >
       <FormShell
         onClose={onClose}
-        label={rule ? "Save schedule" : "Create invoice"}
+        label={
+          rule ? "Save schedule" : record ? "Update invoice" : "Create invoice"
+        }
         onSubmit={() => onSave(data)}
       >
         <div class="form-grid">
@@ -839,13 +856,22 @@ function BillingEditor({
             value={data.notes}
             onChange={(v) => set("notes", v)}
           />
-          <Check
-            label="Email the PDF to the tenant automatically (optional)"
-            checked={data.auto_email}
-            onChange={(v) => set("auto_email", v)}
-            disabled={!system.email_configured}
-          />
-          {!system.email_configured && (
+          {!rule && record && (
+            <div class="notice wide">
+              Saving keeps the invoice number, payments and email history, and
+              refreshes landlord, tenant and property details from their current
+              records.
+            </div>
+          )}
+          {(rule || !record) && (
+            <Check
+              label="Email the PDF to the tenant automatically (optional)"
+              checked={data.auto_email}
+              onChange={(v) => set("auto_email", v)}
+              disabled={!system.email_configured}
+            />
+          )}
+          {(rule || !record) && !system.email_configured && (
             <small class="muted wide">
               Email is disabled until SMTP is configured. PDF downloads work
               without email.
@@ -863,7 +889,7 @@ function BillingEditor({
     </Modal>
   );
 }
-function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
+function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
   const [inv, setInv] = useState(null),
     [error, setError] = useState(""),
     [emailDialog, setEmailDialog] = useState(false),
@@ -876,7 +902,15 @@ function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
     });
   const reload = async () => setInv(await api("/invoices/" + id));
   useEffect(() => {
-    reload().catch((e) => setError(e.message));
+    let cancelled = false;
+    setInv(null);
+    setError("");
+    api("/invoices/" + id)
+      .then((invoice) => !cancelled && setInv(invoice))
+      .catch((e) => !cancelled && setError(e.message));
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
   const act = async (fn, message) => {
     setBusy(true);
@@ -886,26 +920,6 @@ function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
       await reload();
       onChange();
       notify(message);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const recreate = async () => {
-    if (
-      !confirm(
-        `Recreate ${inv.number} with the latest landlord, tenant and property details? The current invoice will be voided and kept in your history.`,
-      )
-    )
-      return;
-    setBusy(true);
-    setError("");
-    try {
-      const replacement = await api(`/invoices/${id}/recreate`, "POST", {});
-      onChange();
-      notify(`Replacement ${replacement.number} created`);
-      onRecreated(replacement.id);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -992,31 +1006,18 @@ function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
               >
                 Send email to…
               </Button>
-              {inv.replacement ? (
-                <Button
-                  secondary
-                  onClick={() => onRecreated(inv.replacement.id)}
-                >
-                  Open replacement
-                </Button>
-              ) : (
-                <Button
-                  secondary
-                  disabled={
-                    busy ||
-                    inv.paid_cents > 0 ||
-                    inv.email_jobs.some((job) => job.status === "sending")
-                  }
-                  title={
-                    inv.paid_cents > 0
-                      ? "Remove recorded payments before recreating"
-                      : "Create a replacement using current records"
-                  }
-                  onClick={recreate}
-                >
-                  Recreate invoice
-                </Button>
-              )}
+              <Button
+                secondary
+                disabled={
+                  busy ||
+                  inv.status === "void" ||
+                  inv.email_jobs.some((job) => job.status === "sending")
+                }
+                title="Edit this invoice and refresh its saved records"
+                onClick={() => onEdit(inv)}
+              >
+                Edit invoice
+              </Button>
               {inv.status !== "void" && (
                 <button
                   disabled={busy}
@@ -1042,9 +1043,6 @@ function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
                 <div>
                   <h2>{inv.status === "void" ? "VOID INVOICE" : "INVOICE"}</h2>
                   <p class="invoice-number">{inv.number}</p>
-                  {inv.recreated_from && (
-                    <small>Recreated from {inv.recreated_from.number}</small>
-                  )}
                 </div>
                 <div class="right">
                   <b>{inv.snapshot.landlord.name}</b>
@@ -1242,9 +1240,9 @@ function InvoiceDetail({ id, onClose, onChange, onRecreated, system, notify }) {
               </section>
             )}
             <p class="muted">
-              Issued invoices preserve the landlord, tenant, property and
-              currency details at creation. To correct an invoice, void it and
-              create a replacement.
+              This invoice keeps a snapshot of its billing details. Editing it
+              refreshes that snapshot from the current landlord, tenant and
+              property records.
             </p>
           </>
         ) : (
@@ -1453,8 +1451,8 @@ function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
           <Icon name="invoices" />
           <h3>Your history stays intact</h3>
           <p>
-            Profile changes apply to new invoices. Existing invoices keep their
-            original details.
+            Profile changes apply to new invoices. Use Edit invoice when you
+            want an existing invoice to use the latest saved details.
           </p>
         </div>
       </aside>
@@ -1526,7 +1524,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [auth, revision]);
+  }, [auth]);
   useEffect(() => {
     if (!auth || !profileId) return;
     let cancelled = false;
@@ -2386,9 +2384,7 @@ function App() {
           id={modal.id}
           onClose={() => setModal(null)}
           onChange={refresh}
-          onRecreated={(replacementId) =>
-            setModal({ kind: "detail", id: replacementId })
-          }
+          onEdit={(invoice) => setModal({ kind: "invoice", record: invoice })}
           system={system}
           notify={notify}
         />
