@@ -196,6 +196,8 @@ Enabling SMTP alone does **not** send invoices. Select the optional email checkb
 
 The queue processes up to five emails per minute. Failures retry with exponential backoff, up to five attempts. Failed deliveries can be retried in **Email delivery**. If the server restarts while a message is being sent, the delivery is marked **uncertain** rather than blindly resent; check whether the tenant received it before retrying. SMTP acceptance does not confirm inbox delivery, and SMTP cannot guarantee exactly-once delivery. No tracking pixels or email-open tracking are included.
 
+To inspect email delivery attempts on PM2, run `pm2 logs rental-invoices --lines 100 --timestamp`. The application records the invoice number, recipient, job ID, SMTP response and message ID when the SMTP provider accepts the message; failures show the attempt and error. Filter recent output with `pm2 logs rental-invoices --lines 200 --nostream | grep 'Invoice email'`. These entries appear after deploying this version. If a job says **sent** but no message arrives, confirm the recipient address in **Email delivery**, check spam/junk and your SMTP provider's delivery or bounce logs using the message ID. The app cannot confirm final inbox delivery, and retrying a **sent** job may send a duplicate if the provider delivered it later.
+
 ## First-use workflow
 
 1. Complete **Landlord profile**, including payment instructions, currency and time zone (default `Asia/Kolkata`).

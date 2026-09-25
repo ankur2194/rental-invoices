@@ -405,7 +405,7 @@ export async function buildApp(options = {}) {
     running = true;
     try {
       runSchedules(db);
-      await processEmailJobs(db, mailer);
+      await processEmailJobs(db, mailer, app.log);
       db.prepare("DELETE FROM sessions WHERE expires<?").run(Date.now());
     } catch (e) {
       app.log.error(e);
