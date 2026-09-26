@@ -1320,25 +1320,29 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                   )}
                 </div>
               </div>
-              <div class="paper-dates">
-                <span>
-                  Place of supply
-                  <b>
-                    {inv.place_of_supply || "—"}
-                    {inv.place_of_supply_code
-                      ? ` (${inv.place_of_supply_code})`
-                      : ""}
-                  </b>
-                </span>
-                <span>
-                  Reverse charge <b>{inv.reverse_charge ? "Yes" : "No"}</b>
-                </span>
-                <span class="date">
-                  Issued <b>{dateLabel(inv.issue_date)}</b>
-                </span>
-                <span class="date">
-                  Due <b>{dateLabel(inv.due_date)}</b>
-                </span>
+              <div class="paper-meta">
+                <div class="paper-dates">
+                  <span>
+                    Place of supply
+                    <b>
+                      {inv.place_of_supply || "—"}
+                      {inv.place_of_supply_code
+                        ? ` (${inv.place_of_supply_code})`
+                        : ""}
+                    </b>
+                  </span>
+                  <span>
+                    Reverse charge <b>{inv.reverse_charge ? "Yes" : "No"}</b>
+                  </span>
+                </div>
+                <div class="paper-dates">
+                  <span>
+                    Issued <b>{dateLabel(inv.issue_date)}</b>
+                  </span>
+                  <span>
+                    Due <b>{dateLabel(inv.due_date)}</b>
+                  </span>
+                </div>
               </div>
               <div class="table-wrap">
                 <table class="paper-items">

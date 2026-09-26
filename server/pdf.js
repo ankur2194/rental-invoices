@@ -347,9 +347,12 @@ export function makePdf(invoice) {
         }
       }
       y += 12;
-      // An optional aside is drawn beside the first chunk of a section.
+      // Two-column grid shared by side-by-side boxes and the summary row.
+      const gap = 14,
+        half = (width - gap) / 2;
+      // An optional aside box is drawn beside the first chunk of a section.
       const section = (heading, parts, aside) => {
-        const asideW = aside ? aside.w + 16 : 0;
+        const asideW = aside ? aside.w + gap : 0;
         const lines = stack(parts, width - 24 - asideW);
         let index = 0,
           continuation = false;
@@ -367,14 +370,21 @@ export function makePdf(invoice) {
             end++;
           }
           h = Math.max(h, minH);
-          doc.roundedRect(left, start, width, h + 10, 4).fill(COLORS.pale);
+          doc
+            .roundedRect(left, start, width - asideW, h + 10, 4)
+            .fill(COLORS.pale);
           label(
             heading + (continuation ? " (CONTINUED)" : ""),
             left + 12,
             start + 9,
             width - 24 - asideW,
           );
-          if (aside && !continuation) aside.draw(right - 12 - aside.w, start);
+          if (aside && !continuation) {
+            doc
+              .roundedRect(right - aside.w, start, aside.w, h + 10, 4)
+              .fill(COLORS.pale);
+            aside.draw(right - aside.w + 12, start);
+          }
           y = start + 21;
           drawLines(lines.slice(index, end), left + 12, width - 24 - asideW);
           y = start + h + 20;
@@ -390,8 +400,7 @@ export function makePdf(invoice) {
         if (!blocks.length) return;
         if (blocks.length === 1)
           return section(blocks[0].heading, blocks[0].parts);
-        const gap = 14,
-          w = (width - gap * (blocks.length - 1)) / blocks.length;
+        const w = (width - gap * (blocks.length - 1)) / blocks.length;
         const cols = blocks.map((block, i) => ({
           ...block,
           x: left + i * (w + gap),
@@ -436,7 +445,6 @@ export function makePdf(invoice) {
           }
         }
       };
-      const datesW = 150;
       section(
         "PROPERTY",
         [
@@ -455,30 +463,16 @@ export function makePdf(invoice) {
           },
         ],
         {
-          w: datesW,
+          w: 184,
           h: 54,
-          draw: (x, top) => {
-            doc
-              .strokeColor(COLORS.line)
-              .lineWidth(0.6)
-              .moveTo(x - 8, top + 9)
-              .lineTo(x - 8, top + 54)
-              .stroke();
+          draw: (x, top) =>
             [
               ["ISSUE DATE", invoice.issue_date, top + 9],
               ["DUE DATE", invoice.due_date, top + 34],
             ].forEach(([title, value, at]) => {
-              text(title, x, at, datesW, style(8, true, COLORS.muted), "right");
-              text(
-                displayDate(value),
-                x,
-                at + 12,
-                datesW,
-                style(9, true),
-                "right",
-              );
-            });
-          },
+              label(title, x, at, 160);
+              text(displayDate(value), x, at + 12, 160, style(9, true));
+            }),
         },
       );
       // Fixed-width table columns and repeated header on each page of items.
@@ -635,9 +629,9 @@ export function makePdf(invoice) {
       // Amount in words is bottom-aligned with the balance box.
       const rowHeight = 16,
         balanceHeight = 28;
-      const totalW = 240,
+      const totalW = half,
         totalX = right - totalW;
-      const wordsW = totalX - left - 16;
+      const wordsW = half;
       const words = wrap(
         amountInWords(invoice.total_cents),
         wordsW - 24,
