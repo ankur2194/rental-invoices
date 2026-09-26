@@ -59,6 +59,14 @@ function createInvoiceRecord(
     if (existing) return getInvoice(db, existing.id);
   }
   const prepared = prepareInvoice(db, input);
+  const sequence = db
+    .prepare(
+      `INSERT INTO landlord_invoice_sequences(landlord_id,next_value) VALUES(?,2)
+       ON CONFLICT(landlord_id) DO UPDATE SET next_value=next_value+1
+       RETURNING next_value-1 value`,
+    )
+    .get(prepared.profile.id).value;
+  const number = `${prepared.profile.prefix}-${input.issue_date.slice(0, 4)}-${String(sequence).padStart(5, "0")}`;
   const id = Number(
     db
       .prepare(
@@ -79,7 +87,6 @@ function createInvoiceRecord(
         prepared.calculated.total_cents,
       ).lastInsertRowid,
   );
-  const number = `${prepared.profile.prefix}-${input.issue_date.slice(0, 4)}-${String(id).padStart(5, "0")}`;
   db.prepare("UPDATE invoices SET number=? WHERE id=?").run(number, id);
   if (input.auto_email) queueEmail(db, id);
   return getInvoice(db, id);
@@ -90,6 +97,21 @@ function prepareInvoice(db, input) {
   if (!profile?.name)
     throw new AppError(
       "Complete this landlord profile before creating invoices",
+    );
+  if (
+    db
+      .prepare(
+        "SELECT id FROM landlord_profiles WHERE id!=? AND json_extract(data,'$.prefix')=? LIMIT 1",
+      )
+      .get(profile.id, profile.prefix) ||
+    db
+      .prepare(
+        "SELECT id FROM invoices WHERE landlord_id!=? AND number GLOB ? LIMIT 1",
+      )
+      .get(profile.id, `${profile.prefix}-[0-9][0-9][0-9][0-9]-*`)
+  )
+    throw new AppError(
+      "Each landlord profile must use a unique invoice prefix",
     );
   if (!tenant.active || !property.active)
     throw new AppError("Tenant and property must be active");
@@ -124,6 +146,10 @@ export function updateInvoice(db, invoiceId, input) {
         "Email delivery is in progress. Edit the invoice after it completes.",
       );
     const prepared = prepareInvoice(db, input);
+    if (prepared.profile.id !== invoice.landlord_id)
+      throw new AppError(
+        "An invoice cannot be moved to a different landlord profile",
+      );
     if (prepared.calculated.total_cents < invoice.paid_cents)
       throw new AppError(
         "Invoice total cannot be lower than its recorded payments",
