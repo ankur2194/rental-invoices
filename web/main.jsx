@@ -1320,44 +1320,52 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                   )}
                 </div>
               </div>
-              <div class="paper-dates">
-                <span>
-                  Issued <b>{dateLabel(inv.issue_date)}</b>
-                </span>
-                <span>
-                  Due <b>{dateLabel(inv.due_date)}</b>
-                </span>
-                <span>
-                  Period{" "}
-                  <b>
-                    {dateLabel(inv.period_start)} – {dateLabel(inv.period_end)}
-                  </b>
-                </span>
-                <span>
-                  Place of supply
-                  <b>
-                    {inv.place_of_supply || "—"}
-                    {inv.place_of_supply_code
-                      ? ` (${inv.place_of_supply_code})`
-                      : ""}
-                  </b>
-                </span>
-                <span>
-                  Reverse charge <b>{inv.reverse_charge ? "Yes" : "No"}</b>
-                </span>
+              <div class="paper-meta">
+                <div class="paper-dates">
+                  <span>
+                    Place of supply
+                    <b>
+                      {inv.place_of_supply || "—"}
+                      {inv.place_of_supply_code
+                        ? ` (${inv.place_of_supply_code})`
+                        : ""}
+                    </b>
+                  </span>
+                  <span>
+                    Reverse charge <b>{inv.reverse_charge ? "Yes" : "No"}</b>
+                  </span>
+                </div>
+                <div class="paper-dates">
+                  <span>
+                    Issued <b>{dateLabel(inv.issue_date)}</b>
+                  </span>
+                </div>
+                <div class="paper-dates">
+                  <span>
+                    Due <b>{dateLabel(inv.due_date)}</b>
+                  </span>
+                </div>
               </div>
               <div class="table-wrap">
-                <table>
+                <table class="paper-items">
+                  <colgroup>
+                    <col class="description" />
+                    <col />
+                    <col />
+                    <col class="money" />
+                    <col class="money" />
+                    <col class="gst" />
+                    <col class="money" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>Description</th>
                       <th>SAC / HSN</th>
                       <th>Qty</th>
-                      <th>UQC</th>
                       <th>Rate</th>
                       <th>Taxable</th>
                       <th>GST</th>
-                      <th>Tax</th>
+                      <th>Total</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1373,8 +1381,10 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                           </small>
                         </td>
                         <td>{i.sac_code || "—"}</td>
-                        <td>{i.quantity}</td>
-                        <td>{i.unit || "—"}</td>
+                        <td>
+                          {i.quantity}
+                          <small>{i.unit || "—"}</small>
+                        </td>
                         <td>
                           {money(i.rate_cents, inv.snapshot.landlord.currency)}
                         </td>
@@ -1384,16 +1394,22 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                             inv.snapshot.landlord.currency,
                           )}
                         </td>
-                        <td>
-                          {inv.tax_mode === "cgst_sgst" && Number(i.gst_rate)
-                            ? `CGST ${Number(i.gst_rate) / 2}% + SGST ${Number(i.gst_rate) / 2}%`
-                            : inv.tax_mode === "igst" && Number(i.gst_rate)
-                              ? `IGST ${i.gst_rate}%`
-                              : "0%"}
-                        </td>
                         <td class="amount">
                           {money(
                             i.tax_cents || 0,
+                            inv.snapshot.landlord.currency,
+                          )}
+                          <small>
+                            {inv.tax_mode === "cgst_sgst" && Number(i.gst_rate)
+                              ? `CGST ${Number(i.gst_rate) / 2}% + SGST ${Number(i.gst_rate) / 2}%`
+                              : inv.tax_mode === "igst" && Number(i.gst_rate)
+                                ? `IGST ${i.gst_rate}%`
+                                : "0%"}
+                          </small>
+                        </td>
+                        <td class="amount">
+                          {money(
+                            i.gross_cents ?? i.amount_cents,
                             inv.snapshot.landlord.currency,
                           )}
                         </td>
@@ -1450,24 +1466,30 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                   </b>
                 </span>
               </div>
-              {inv.snapshot.landlord.payment_details && (
-                <>
-                  <h4>Payment details</h4>
-                  <p class="preserve">
-                    {inv.snapshot.landlord.payment_details}
-                  </p>
-                </>
-              )}
-              {(inv.notes || inv.snapshot.landlord.notes) && (
-                <>
-                  <h4>Notes</h4>
-                  <p class="preserve">
-                    {[inv.notes, inv.snapshot.landlord.notes]
-                      .filter(Boolean)
-                      .join("\n")}
-                  </p>
-                </>
-              )}
+              <div class="paper-notes">
+                {inv.snapshot.landlord.payment_details && (
+                  <div>
+                    <h4>Payment details</h4>
+                    <p class="preserve">
+                      {inv.snapshot.landlord.payment_details}
+                    </p>
+                  </div>
+                )}
+                {(inv.notes || inv.snapshot.landlord.notes) && (
+                  <div>
+                    <h4>Notes</h4>
+                    <p class="preserve">
+                      {[inv.notes, inv.snapshot.landlord.notes]
+                        .filter(Boolean)
+                        .join("\n")}
+                    </p>
+                  </div>
+                )}
+              </div>
+              <p class="paper-footnote">
+                This is a computer-generated invoice and does not require a
+                signature.
+              </p>
             </article>
             <section class="detail-section">
               <h3>Payments</h3>

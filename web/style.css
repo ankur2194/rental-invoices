@@ -1179,6 +1179,11 @@ code {
 .paper-parties .eyebrow {
   font-size: 9px;
 }
+.paper-meta {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 18px;
+}
 .paper-dates {
   display: flex;
   flex-wrap: wrap;
@@ -1186,8 +1191,10 @@ code {
   background: #f6f8f2;
   padding: 15px;
   font-size: 10px;
-  margin-bottom: 18px;
   color: #89997b;
+}
+.paper-dates:first-child {
+  flex: 1;
 }
 .paper-dates b {
   display: block;
@@ -1203,11 +1210,34 @@ code {
   white-space: normal;
   min-width: 160px;
 }
+.paper-items {
+  table-layout: fixed;
+  min-width: 640px;
+}
+.paper-items col {
+  width: 72px;
+}
+.paper-items col.money {
+  width: 100px;
+}
+.paper-items col.gst {
+  width: 150px;
+}
+.paper-items col.description {
+  width: auto;
+}
+.paper-items td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.paper-items td small {
+  font-weight: 400;
+}
 .paper-total {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 300px;
+  max-width: calc(50% - 10px);
   margin: 25px 0 25px auto;
 }
 .paper-total span {
@@ -1223,6 +1253,17 @@ code {
   padding-top: 12px;
   font-size: 16px;
   color: var(--dark);
+}
+.paper-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 20px;
+}
+.paper-footnote {
+  margin-top: 25px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
 }
 .invoice-paper h4 {
   font-size: 11px;
@@ -1754,11 +1795,18 @@ code {
   .paper-top .right {
     text-align: left;
   }
+  .paper-meta {
+    flex-direction: column;
+    gap: 12px;
+  }
   .paper-dates {
     gap: 14px;
   }
   .paper-total {
     max-width: none;
+  }
+  .paper-notes {
+    grid-template-columns: 1fr;
   }
   .detail-actions .btn {
     font-size: 11px;
