@@ -1339,6 +1339,8 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                   <span>
                     Issued <b>{dateLabel(inv.issue_date)}</b>
                   </span>
+                </div>
+                <div class="paper-dates">
                   <span>
                     Due <b>{dateLabel(inv.due_date)}</b>
                   </span>

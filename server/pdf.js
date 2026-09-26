@@ -350,7 +350,7 @@ export function makePdf(invoice) {
       // Two-column grid shared by side-by-side boxes and the summary row.
       const gap = 14,
         half = (width - gap) / 2;
-      // An optional aside box is drawn beside the first chunk of a section.
+      // An optional aside is drawn beside the first chunk of a section.
       const section = (heading, parts, aside) => {
         const asideW = aside ? aside.w + gap : 0;
         const lines = stack(parts, width - 24 - asideW);
@@ -379,12 +379,8 @@ export function makePdf(invoice) {
             start + 9,
             width - 24 - asideW,
           );
-          if (aside && !continuation) {
-            doc
-              .roundedRect(right - aside.w, start, aside.w, h + 10, 4)
-              .fill(COLORS.pale);
-            aside.draw(right - aside.w + 12, start);
-          }
+          if (aside && !continuation)
+            aside.draw(right - aside.w, start, h + 10);
           y = start + 21;
           drawLines(lines.slice(index, end), left + 12, width - 24 - asideW);
           y = start + h + 20;
@@ -464,15 +460,25 @@ export function makePdf(invoice) {
         ],
         {
           w: 184,
-          h: 54,
-          draw: (x, top) =>
+          h: 72,
+          draw: (x, top, h) => {
+            const boxH = (h - 10) / 2;
             [
-              ["ISSUE DATE", invoice.issue_date, top + 9],
-              ["DUE DATE", invoice.due_date, top + 34],
-            ].forEach(([title, value, at]) => {
-              label(title, x, at, 160);
-              text(displayDate(value), x, at + 12, 160, style(9, true));
-            }),
+              ["ISSUE DATE", invoice.issue_date],
+              ["DUE DATE", invoice.due_date],
+            ].forEach(([title, value], i) => {
+              const at = top + i * (boxH + 10);
+              doc.roundedRect(x, at, 184, boxH, 4).fill(COLORS.pale);
+              label(title, x + 12, at + boxH / 2 - 11, 160);
+              text(
+                displayDate(value),
+                x + 12,
+                at + boxH / 2 + 1,
+                160,
+                style(9, true),
+              );
+            });
+          },
         },
       );
       // Fixed-width table columns and repeated header on each page of items.
