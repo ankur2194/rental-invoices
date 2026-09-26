@@ -276,23 +276,8 @@ export function makePdf(invoice) {
         style(18, true, invoice.status === "void" ? COLORS.red : COLORS.green),
         "right",
       );
-      rule(112);
-      const meta = [
-        [left, 135, "ISSUE DATE", displayDate(invoice.issue_date)],
-        [left + 143, 132, "DUE DATE", displayDate(invoice.due_date)],
-        [
-          left + 282,
-          width - 282,
-          "BILLING PERIOD",
-          `${displayDate(invoice.period_start)} - ${displayDate(invoice.period_end)}`,
-        ],
-      ];
-      for (const [x, w, title, value] of meta) {
-        label(title, x, 123, w);
-        text(value, x, 140, w, style(9));
-      }
-      rule(164);
-      y = 184;
+      rule(104);
+      y = 120;
       // Paired landlord / tenant columns can span pages without truncating data.
       const colWidth = (width - 30) / 2;
       const party = (person) =>
@@ -337,7 +322,7 @@ export function makePdf(invoice) {
           y,
           colWidth,
         );
-        y += 20;
+        y += 17;
         while (
           senderIndex < sender.length ||
           recipientIndex < recipient.length
@@ -361,15 +346,18 @@ export function makePdf(invoice) {
           continued = true;
         }
       }
-      y += 14;
-      const section = (heading, parts) => {
-        const lines = stack(parts, width - 24);
+      y += 12;
+      // An optional aside is drawn beside the first chunk of a section.
+      const section = (heading, parts, aside) => {
+        const asideW = aside ? aside.w + 16 : 0;
+        const lines = stack(parts, width - 24 - asideW);
         let index = 0,
           continuation = false;
         while (index < lines.length) {
-          ensure(25 + lines[index].h + 10);
+          const minH = aside && !continuation ? aside.h : 0;
+          ensure(Math.max(21 + lines[index].h, minH) + 10);
           const start = y;
-          let h = 25;
+          let h = 21;
           let end = index;
           while (
             end < lines.length &&
@@ -378,16 +366,18 @@ export function makePdf(invoice) {
             h += lines[end].h;
             end++;
           }
+          h = Math.max(h, minH);
           doc.roundedRect(left, start, width, h + 10, 4).fill(COLORS.pale);
           label(
             heading + (continuation ? " (CONTINUED)" : ""),
             left + 12,
-            start + 11,
-            width - 24,
+            start + 9,
+            width - 24 - asideW,
           );
-          y = start + 25;
-          drawLines(lines.slice(index, end), left + 12, width - 24);
-          y = start + h + 22;
+          if (aside && !continuation) aside.draw(right - 12 - aside.w, start);
+          y = start + 21;
+          drawLines(lines.slice(index, end), left + 12, width - 24 - asideW);
+          y = start + h + 20;
           index = end;
           if (index < lines.length) {
             newPage();
@@ -395,52 +385,143 @@ export function makePdf(invoice) {
           }
         }
       };
-      section("PROPERTY", [
+      // Equal-width boxes side by side; each column paginates independently.
+      const sideBySide = (blocks) => {
+        if (!blocks.length) return;
+        if (blocks.length === 1)
+          return section(blocks[0].heading, blocks[0].parts);
+        const gap = 14,
+          w = (width - gap * (blocks.length - 1)) / blocks.length;
+        const cols = blocks.map((block, i) => ({
+          ...block,
+          x: left + i * (w + gap),
+          lines: stack(block.parts, w - 24),
+          index: 0,
+        }));
+        const remaining = () => cols.some((c) => c.index < c.lines.length);
+        let continuation = false;
+        while (remaining()) {
+          ensure(31 + Math.max(...cols.map((c) => c.lines[c.index]?.h || 0)));
+          const start = y;
+          const chunks = cols.map((c) => {
+            let h = 21,
+              end = c.index;
+            while (
+              end < c.lines.length &&
+              start + h + c.lines[end].h + 10 <= bottom
+            ) {
+              h += c.lines[end].h;
+              end++;
+            }
+            return { h, end };
+          });
+          const h = Math.max(...chunks.map((chunk) => chunk.h));
+          cols.forEach((c, i) => {
+            if (continuation && c.index >= c.lines.length) return;
+            doc.roundedRect(c.x, start, w, h + 10, 4).fill(COLORS.pale);
+            label(
+              c.heading + (continuation ? " (CONTINUED)" : ""),
+              c.x + 12,
+              start + 9,
+              w - 24,
+            );
+            y = start + 21;
+            drawLines(c.lines.slice(c.index, chunks[i].end), c.x + 12, w - 24);
+            c.index = chunks[i].end;
+          });
+          y = start + h + 20;
+          if (remaining()) {
+            newPage();
+            continuation = true;
+          }
+        }
+      };
+      const datesW = 150;
+      section(
+        "PROPERTY",
+        [
+          {
+            value: [property.name, property.unit].filter(Boolean).join(" / "),
+            style: style(10, true),
+          },
+          { value: property.address },
+          {
+            value:
+              property.state &&
+              `${property.state}${property.state_code ? ` (${property.state_code})` : ""}`,
+          },
+          {
+            value: `Place of supply: ${gst.place_of_supply || "Not specified"}${gst.place_of_supply_code ? ` (${gst.place_of_supply_code})` : ""} · Reverse charge: ${gst.reverse_charge ? "Yes" : "No"}`,
+          },
+        ],
         {
-          value: [property.name, property.unit].filter(Boolean).join(" / "),
-          style: style(10, true),
+          w: datesW,
+          h: 54,
+          draw: (x, top) => {
+            doc
+              .strokeColor(COLORS.line)
+              .lineWidth(0.6)
+              .moveTo(x - 8, top + 9)
+              .lineTo(x - 8, top + 54)
+              .stroke();
+            [
+              ["ISSUE DATE", invoice.issue_date, top + 9],
+              ["DUE DATE", invoice.due_date, top + 34],
+            ].forEach(([title, value, at]) => {
+              text(title, x, at, datesW, style(8, true, COLORS.muted), "right");
+              text(
+                displayDate(value),
+                x,
+                at + 12,
+                datesW,
+                style(9, true),
+                "right",
+              );
+            });
+          },
         },
-        { value: property.address },
-        {
-          value:
-            property.state &&
-            `${property.state}${property.state_code ? ` (${property.state_code})` : ""}`,
-        },
-        {
-          value: `Place of supply: ${gst.place_of_supply || "Not specified"}${gst.place_of_supply_code ? ` (${gst.place_of_supply_code})` : ""}`,
-        },
-        { value: `Reverse charge: ${gst.reverse_charge ? "Yes" : "No"}` },
-      ]);
-      // Fixed table columns and repeated header on each page of line items.
+      );
+      // Fixed-width table columns and repeated header on each page of items.
       const columns = [
-        { w: 136, title: "DESCRIPTION" },
-        { w: 44, title: "SAC/HSN" },
-        { w: 30, title: "QTY" },
-        { w: 32, title: "UQC" },
-        { w: 55, title: "RATE" },
-        { w: 59, title: "TAXABLE" },
-        { w: 45, title: "GST RATE" },
-        { w: 55, title: "TAX" },
-        { w: 75, title: "TOTAL" },
+        { w: 165, title: "DESCRIPTION" },
+        { w: 46, title: "SAC/HSN" },
+        { w: 50, title: "QTY" },
+        { w: 62, title: "RATE" },
+        { w: 66, title: "TAXABLE" },
+        { w: 72, title: "GST" },
+        { title: "TOTAL" },
       ];
+      columns.at(-1).w =
+        width - columns.slice(0, -1).reduce((sum, c) => sum + c.w, 0);
       let columnX = left;
       for (const column of columns) {
         column.x = columnX;
         columnX += column.w;
       }
+      const headerHeight = 24;
       const tableHeader = () => {
-        doc.rect(left, y, width, 27).fill(COLORS.green);
+        doc.rect(left, y, width, headerHeight).fill(COLORS.green);
         columns.forEach((c, i) =>
           text(
             c.title,
             c.x + 3,
-            y + 9,
+            y + 8,
             c.w - 6,
             style(6.5, true, "#ffffff"),
             i ? "right" : "left",
           ),
         );
-        y += 27;
+        y += headerHeight;
+      };
+      // Keep a value inside its fixed column by shrinking only as a last resort.
+      const cell = (value, c, at, s) => {
+        let size = s.size;
+        apply({ ...s, size });
+        while (doc.widthOfString(value) > c.w - 6 && size > 5) {
+          size -= 0.25;
+          apply({ ...s, size });
+        }
+        text(value, c.x + 3, at, c.w - 6, { ...s, size }, "right");
       };
       ensure(80);
       tableHeader();
@@ -456,8 +537,8 @@ export function makePdf(invoice) {
           ],
           columns[0].w - 18,
         );
-        const fullHeight = lines.reduce((sum, l) => sum + l.h, 0) + 20;
-        const freshCapacity = bottom - 77 - 27;
+        const fullHeight = lines.reduce((sum, l) => sum + l.h, 0) + 14;
+        const freshCapacity = bottom - 77 - headerHeight;
         if (y + Math.min(fullHeight, freshCapacity) > bottom) {
           newPage();
           tableHeader();
@@ -466,12 +547,12 @@ export function makePdf(invoice) {
           continuation = false;
         while (indexLine < lines.length) {
           const markerHeight = continuation ? 15 : 0;
-          if (y + markerHeight + lines[indexLine].h + 20 > bottom) {
+          if (y + markerHeight + lines[indexLine].h + 14 > bottom) {
             newPage();
             tableHeader();
           }
           const start = y;
-          let height = 10 + markerHeight,
+          let height = 7 + markerHeight,
             end = indexLine;
           while (
             end < lines.length &&
@@ -480,10 +561,10 @@ export function makePdf(invoice) {
             height += lines[end].h;
             end++;
           }
-          height += 10;
+          height = Math.max(height + 7, continuation ? 0 : 30);
           if (index % 2 === 0)
             doc.rect(left, start, width, height).fill("#f8faf8");
-          y = start + 10;
+          y = start + 7;
           if (continuation) {
             text(
               "Item continued",
@@ -496,44 +577,32 @@ export function makePdf(invoice) {
           }
           drawLines(lines.slice(indexLine, end), left + 9, columns[0].w - 18);
           if (!continuation) {
-            const taxBreakdown =
-              gst.tax_mode === "cgst_sgst" && item.tax_cents
-                ? `C ${amount(item.cgst_cents)} / S ${amount(item.sgst_cents)}`
-                : gst.tax_mode === "igst" && item.tax_cents
-                  ? `I ${amount(item.igst_cents)}`
-                  : amount(0);
             const taxRate =
               gst.tax_mode === "cgst_sgst" && Number(item.gst_rate)
-                ? `C${rate(Number(item.gst_rate) / 2)}%/S${rate(Number(item.gst_rate) / 2)}%`
+                ? `C ${rate(Number(item.gst_rate) / 2)}% + S ${rate(Number(item.gst_rate) / 2)}%`
                 : gst.tax_mode === "igst" && Number(item.gst_rate)
-                  ? `I${rate(item.gst_rate)}%`
+                  ? `IGST ${rate(item.gst_rate)}%`
                   : "0%";
-            [
-              item.sac_code || "-",
-              String(item.quantity),
+            const [, sac, qty, unitRate, taxable, tax, total] = columns;
+            const at = start + 7;
+            cell(item.sac_code || "-", sac, at, style(7.5));
+            cell(String(item.quantity), qty, at, style(7.5));
+            cell(
               item.unit || "-",
-              amount(item.rate_cents),
-              amount(item.amount_cents),
-              taxRate,
-              taxBreakdown,
+              qty,
+              at + 11,
+              style(6.5, false, COLORS.muted),
+            );
+            cell(amount(item.rate_cents), unitRate, at, style(7.5));
+            cell(amount(item.amount_cents), taxable, at, style(7.5));
+            cell(amount(item.tax_cents || 0), tax, at, style(7.5));
+            cell(taxRate, tax, at + 11, style(6.5, false, COLORS.muted));
+            cell(
               amount(item.gross_cents ?? item.amount_cents),
-            ].forEach((value, i) => {
-              const c = columns[i + 1];
-              let size = 7.5;
-              apply(style(size, i === 7));
-              while (doc.widthOfString(value) > c.w - 6 && size > 5) {
-                size -= 0.25;
-                apply(style(size, i === 7));
-              }
-              text(
-                value,
-                c.x + 3,
-                start + 10,
-                c.w - 6,
-                style(size, i === 7),
-                "right",
-              );
-            });
+              total,
+              at,
+              style(7.5, true),
+            );
           }
           y = start + height;
           rule(y);
@@ -563,66 +632,81 @@ export function makePdf(invoice) {
         ["Invoice total", invoice.total_cents],
         ["Payments received", invoice.paid_cents],
       ];
-      const summaryHeight = summaryRows.length * 21 + 45;
-      y += 16;
-      ensure(summaryHeight + 12);
-      const totalX = right - 255,
-        totalW = 255;
+      // Amount in words is bottom-aligned with the balance box.
+      const rowHeight = 16,
+        balanceHeight = 28;
+      const totalW = 240,
+        totalX = right - totalW;
+      const wordsW = totalX - left - 16;
+      const words = wrap(
+        amountInWords(invoice.total_cents),
+        wordsW - 24,
+        style(9, true),
+      );
+      const wordsHeight = words.reduce((sum, l) => sum + l.h, 0) + 31;
+      const summaryHeight = summaryRows.length * rowHeight + 3 + balanceHeight;
+      y += 12;
+      ensure(Math.max(summaryHeight, wordsHeight) + 12);
+      const summaryTop = y + Math.max(0, wordsHeight - summaryHeight),
+        summaryBottom = summaryTop + summaryHeight;
       summaryRows.forEach(([title, value], index) => {
-        const offset = index * 21;
+        const at = summaryTop + index * rowHeight;
         const strong = title === "Invoice total";
-        text(title, totalX + 12, y + offset, 125, style(8.5, strong));
+        text(title, totalX + 12, at, 110, style(8.5, strong));
         text(
           `${landlord.currency} ${amount(value)}`,
-          totalX + 115,
-          y + offset,
-          128,
+          totalX + 110,
+          at,
+          totalW - 122,
           style(8.5, strong),
           "right",
         );
       });
-      const balanceY = y + summaryRows.length * 21 + 3;
-      doc.roundedRect(totalX, balanceY, totalW, 36, 4).fill(COLORS.green);
+      const balanceY = summaryBottom - balanceHeight;
+      doc
+        .roundedRect(totalX, balanceY, totalW, balanceHeight, 4)
+        .fill(COLORS.green);
       text(
         invoice.status === "void" ? "Balance (void)" : "Balance due",
         totalX + 12,
-        balanceY + 12,
-        103,
+        balanceY + 8,
+        98,
         style(9, true, "#ffffff"),
       );
       text(
         `${landlord.currency} ${amount(invoice.balance_cents)}`,
-        totalX + 115,
-        balanceY + 12,
-        128,
+        totalX + 110,
+        balanceY + 8,
+        totalW - 122,
         style(9, true, "#ffffff"),
         "right",
       );
-      y += summaryHeight + 18;
-      section("AMOUNT IN WORDS", [
-        { value: amountInWords(invoice.total_cents) },
-      ]);
-      if (invoice.status === "void")
-        section("VOID INVOICE", [
-          {
-            value: "This invoice has been cancelled. No payment is requested.",
-          },
-        ]);
-      if (landlord.payment_details)
-        section("PAYMENT DETAILS", [{ value: landlord.payment_details }]);
+      const wordsY = summaryBottom - wordsHeight;
+      doc.roundedRect(left, wordsY, wordsW, wordsHeight, 4).fill(COLORS.pale);
+      label("AMOUNT IN WORDS", left + 12, wordsY + 9, wordsW - 24);
+      y = wordsY + 21;
+      drawLines(words, left + 12, wordsW - 24);
+      y = summaryBottom + 12;
       const notes = [invoice.notes, landlord.notes].filter(Boolean).join("\n");
-      if (notes) section("NOTES", [{ value: notes }]);
-      ensure(62);
-      label(`FOR ${String(landlord.name).toUpperCase()}`, right - 230, y, 230);
-      text(
-        "Authorised Signatory",
-        right - 230,
-        y + 34,
-        230,
-        style(8, false, COLORS.muted),
-        "right",
+      sideBySide(
+        [
+          invoice.status === "void"
+            ? {
+                heading: "VOID INVOICE",
+                parts: [
+                  {
+                    value:
+                      "This invoice has been cancelled. No payment is requested.",
+                  },
+                ],
+              }
+            : landlord.payment_details && {
+                heading: "PAYMENT DETAILS",
+                parts: [{ value: landlord.payment_details }],
+              },
+          notes && { heading: "NOTES", parts: [{ value: notes }] },
+        ].filter(Boolean),
       );
-      y += 62;
       // Footer space is reserved explicitly on every page.
       const { count } = doc.bufferedPageRange();
       for (let page = 0; page < count; page++) {
@@ -636,6 +720,15 @@ export function makePdf(invoice) {
           width - 90,
           style(8, false, COLORS.muted),
         );
+        if (page === count - 1)
+          text(
+            "This is a computer-generated invoice and does not require a signature.",
+            left + 110,
+            foot + 0.5,
+            width - 220,
+            style(7, false, COLORS.muted),
+            "center",
+          );
         text(
           `Page ${page + 1} of ${count}`,
           right - 90,

@@ -10,9 +10,10 @@ test("ordinary GST invoice stays compact and embeds bundled fonts", async () => 
   const before = JSON.stringify(invoice);
   const pdf = await makePdf(invoice);
   assert.equal(pdf.subarray(0, 5).toString(), "%PDF-");
-  assert.ok(
-    pageCount(pdf) <= 2,
-    "A detailed GST invoice must not create a mostly blank extra page",
+  assert.equal(
+    pageCount(pdf),
+    1,
+    "A typical GST invoice must fit on a single page",
   );
   assert.match(
     pdf.toString("latin1"),
@@ -55,6 +56,6 @@ test("oversized descriptions and notes split across pages without hanging", asyn
 });
 test("void invoices still export as valid PDFs", async () => {
   const pdf = await makePdf({ ...sampleInvoice(), status: "void" });
-  assert.ok(pageCount(pdf) <= 2);
+  assert.equal(pageCount(pdf), 1);
   assert.equal(pdf.subarray(0, 5).toString(), "%PDF-");
 });

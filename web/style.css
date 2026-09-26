@@ -1189,6 +1189,12 @@ code {
   margin-bottom: 18px;
   color: #89997b;
 }
+.paper-dates .date {
+  text-align: right;
+}
+.paper-dates span:not(.date) + .date {
+  margin-left: auto;
+}
 .paper-dates b {
   display: block;
   margin-top: 5px;
@@ -1202,6 +1208,29 @@ code {
 .invoice-paper td:first-child {
   white-space: normal;
   min-width: 160px;
+}
+.paper-items {
+  table-layout: fixed;
+  min-width: 640px;
+}
+.paper-items col {
+  width: 72px;
+}
+.paper-items col.money {
+  width: 100px;
+}
+.paper-items col.gst {
+  width: 150px;
+}
+.paper-items col.description {
+  width: auto;
+}
+.paper-items td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.paper-items td small {
+  font-weight: 400;
 }
 .paper-total {
   display: flex;
@@ -1223,6 +1252,17 @@ code {
   padding-top: 12px;
   font-size: 16px;
   color: var(--dark);
+}
+.paper-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 20px;
+}
+.paper-footnote {
+  margin-top: 25px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
 }
 .invoice-paper h4 {
   font-size: 11px;
@@ -1759,6 +1799,9 @@ code {
   }
   .paper-total {
     max-width: none;
+  }
+  .paper-notes {
+    grid-template-columns: 1fr;
   }
   .detail-actions .btn {
     font-size: 11px;

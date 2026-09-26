@@ -22,7 +22,7 @@ A small, self-hosted portal for managing one or more landlord identities from a 
 - Indian GST-oriented Tax Invoices and Bills of Supply with SAC/HSN, UQC, GST rate, taxable value, CGST/SGST or IGST, place of supply and reverse-charge indication.
 - Weekly, monthly and yearly recurring schedules, pause/resume, end dates, due dates and optional automatic email.
 - Dynamic item titles, descriptions and notes using billing-period tokens.
-- Structured A4 invoice PDFs with supplier/recipient GST details, PAN, property/place of supply, itemized tax columns, amount in words, payment instructions, signatory space and page numbers. Long content flows across pages with repeated table headers. PDF downloads work from invoice lists and details regardless of SMTP configuration.
+- Structured single-page A4 invoice PDFs with supplier/recipient GST details, PAN, property/place of supply with issue and due dates, fixed-width item columns (quantity with UQC, GST rate with tax), amount in words beside the totals, side-by-side payment instructions and notes, a computer-generated invoice footer and page numbers. Long content flows across pages with repeated table headers. Use `{period_start}` and `{period_end}` in item descriptions to show the billing period. PDF downloads work from invoice lists and details regardless of SMTP configuration.
 - The same PDF renderer serves downloads and optional email attachments. Previously issued invoices use the updated layout when downloaded again; their stored billing details are unchanged.
 - Optional manual email or automatic email with PDF attached; delivery history, failures and retry controls.
 - Partial/full payment recording, correction of payment records, overdue tracking, search and status filtering.
