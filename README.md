@@ -14,19 +14,21 @@ A small, self-hosted portal for managing one or more landlord identities from a 
 ## Included
 
 - Private administrator login; password change and session revocation.
-- Multiple landlord profiles, each with its own identity, contact details, tax identifier, bank/UPI instructions, currency, unique invoice prefix, independent invoice-number series and billing time zone.
+- Multiple landlord profiles, each with its own identity, contact details, PAN/GSTIN, bank/UPI instructions, currency, GST-safe invoice prefix, independent financial-year invoice series and billing time zone.
 - A profile switcher that scopes the dashboard, properties, tenants, invoices, recurring billing and email delivery history to the selected landlord.
 - Direct URLs for every main section and invoice detail, so pages can be refreshed, bookmarked and shared between signed-in administrators.
 - Property/unit records assigned to a landlord profile, plus tenant contact details, default rent, deposit and lease dates; edit or archive records.
 - Manual invoices with multiple items: rent, electricity, maintenance, municipal property tax, water and other charges.
+- Indian GST-oriented Tax Invoices and Bills of Supply with SAC/HSN, UQC, GST rate, taxable value, CGST/SGST or IGST, place of supply and reverse-charge indication.
 - Weekly, monthly and yearly recurring schedules, pause/resume, end dates, due dates and optional automatic email.
 - Dynamic item titles, descriptions and notes using billing-period tokens.
-- Structured A4 invoice PDFs with landlord/tenant details, a property section, itemized quantity/rate/amount columns, totals, payment instructions and page numbers. Long content flows across pages with repeated table headers. PDF downloads work from invoice lists and details regardless of SMTP configuration.
+- Structured A4 invoice PDFs with supplier/recipient GST details, PAN, property/place of supply, itemized tax columns, amount in words, payment instructions, signatory space and page numbers. Long content flows across pages with repeated table headers. PDF downloads work from invoice lists and details regardless of SMTP configuration.
 - The same PDF renderer serves downloads and optional email attachments. Previously issued invoices use the updated layout when downloaded again; their stored billing details are unchanged.
 - Optional manual email or automatic email with PDF attached; delivery history, failures and retry controls.
 - Partial/full payment recording, correction of payment records, overdue tracking, search and status filtering.
 - Invoice editing: update dates, tenant, charges and notes on the same invoice number while refreshing its landlord, tenant and property snapshot from current records.
 - Historical snapshots: changing a tenant, property, currency or landlord profile does not silently rewrite issued invoices; details refresh only when an invoice is explicitly edited.
+- A separately confirmed landlord-level action deletes that landlord's invoices, payments and email history and resets all of its financial-year counters while keeping properties, tenants and schedules.
 - Docker configuration, health check, online backup and password-recovery scripts, automated tests and GitHub Actions CI.
 
 ## Production with Docker
@@ -164,7 +166,7 @@ pm2 save
 
 After changing only `.env`, run `pm2 restart rental-invoices --update-env`. Environment values already exported in the shell or PM2 take precedence over `.env`; avoid conflicting definitions. Preserve the data directory and `.env` during updates.
 
-When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The invoice-editing migration removes the obsolete recreation link only; any original and replacement invoices already created by the previous release remain intact. The invoice-series migration renumbers existing invoices from `00001` independently for each landlord, in their original creation order, and then continues that landlord's counter. If profiles shared a prefix, the first keeps it and later profiles receive a unique suffix such as `INV-2`. Tenant, payment, recurring schedule, email and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
+When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The invoice-editing migration removes the obsolete recreation link only; any original and replacement invoices already created by the previous release remain intact. The GST/FY migration renumbers existing invoices independently for each landlord and Indian financial year, in original creation order, using `PREFIX-2627-0001`. Existing prefixes are normalized to at most six GST-safe characters; a dot becomes a hyphen, so `INV.R1` becomes `INV-R1`. If profiles shared a prefix, the first keeps it and later profiles receive a unique suffix such as `INV-2`. Tenant, payment, recurring schedule, email and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
 
 To create a consistent backup from the project root:
 
@@ -203,11 +205,11 @@ The queue processes up to five emails per minute. Failures retry with exponentia
 
 ## First-use workflow
 
-1. Complete the migrated/default profile under **Landlord profiles**, or add another profile. Each profile has its own payment instructions, currency, unique invoice prefix, invoice-number series and time zone.
-2. Select the landlord in the sidebar, then add a **Property**. New properties belong to the selected profile.
-3. Add a **Tenant** and assign the property. Email can be blank if you only download PDFs.
+1. Complete the migrated/default profile under **Landlord profiles**, or add another profile. For GST documents, enter the supplier's address, state, PAN and GSTIN. Each profile has its own payment instructions, currency, unique invoice prefix, financial-year invoice series and time zone.
+2. Select the landlord in the sidebar, then add a **Property**, including its state/place of supply. New properties belong to the selected profile.
+3. Add a **Tenant** and assign the property. Add the recipient's address, state and GSTIN where applicable. Email can be blank if you only download PDFs.
 4. Use **Create invoice** for a one-off bill, or **Recurring Billing → Create recurring schedule** to set up recurring rent.
-5. Add electricity/maintenance/tax as additional invoice items or independent schedules. For metered electricity, enter consumed units as quantity and the unit price as rate.
+5. Add electricity/maintenance/tax as additional invoice items or independent schedules. Enter the applicable SAC/HSN, UQC and GST rate for GST documents. For metered electricity, enter consumed units as quantity and the unit price as rate.
 6. Open an invoice to **Download PDF**, optionally **Send email**, or **Record payment**.
 
 Use **Edit invoice** to correct dates, charges, notes or the selected tenant. Saving updates the same invoice and invoice number, and refreshes its landlord, tenant and property details from current records. Payments and email history remain attached. The new total cannot be lower than recorded payments, void invoices cannot be edited, and editing waits for any email delivery currently in progress. Saving does not send email automatically.
@@ -247,9 +249,13 @@ A unique schedule/date key prevents duplicate scheduled invoices, including afte
 
 This is a private multi-landlord administrative portal, not a public multi-company SaaS or tenant login/payment gateway. All administrator accounts can access all landlord profiles. Tenants receive optional PDFs but do not have accounts. Deposits are reference records, not a deposit ledger. Payments are recorded manually; no bank integration or online collection is included.
 
-All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. Categories such as municipal property tax are ordinary user-entered charges; there is no GST computation, statutory tax-return filing, discount engine or automatic utility-meter import. Issued invoices retain snapshots but can be explicitly edited; void invoices cannot be edited. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger.
+All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. For a Tax Invoice, the portal calculates line-level CGST/SGST or IGST from the rate entered by the user. It does not determine whether a charge is taxable, choose its SAC/HSN or rate, apply exemptions, file GST returns, generate an IRN/e-invoice QR code, import utility meters or replace professional tax advice. If e-invoicing applies to a landlord, submit the invoice data through the GST Invoice Registration Portal or a compatible provider before treating it as an e-invoice.
 
-Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates use the currency of the landlord profile that owns their property, so update those amounts before creating further invoices if you change that profile's currency. Each landlord has an independent increasing sequence (not reset annually), such as `PATEL-2026-00001`, and every profile must use a unique prefix. A prefix already present in another landlord's historical invoices cannot be reused. Changing a prefix affects future invoice numbers only; the migration to independent series is the one-time exception that renumbers existing invoices.
+Issued invoices retain snapshots but can be explicitly edited; void invoices cannot be edited. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger. The **Danger zone** on a landlord profile permanently deletes that landlord's invoices, payments and email records and resets its counters; it requires typing the exact profile name. Take a backup first and consider applicable statutory record-retention duties. Active schedules remain and can create future invoices.
+
+Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates use the currency of the landlord profile that owns their property, so update those amounts before creating further invoices if you change that profile's currency. GST documents require INR in this portal.
+
+Each landlord has an independent series for each Indian financial year. A prefix such as `INV-R1` produces `INV-R1-2627-0001` for FY 2026-27 and restarts at `0001` for the next FY. Prefixes are limited to six uppercase letters/numbers, hyphens or slashes so the generated number remains within 16 characters. Every profile must use a unique prefix, and a prefix already present in another landlord's historical invoices cannot be reused. Changing a prefix affects future invoice numbers only; the GST/FY migration is the one-time exception that renumbers existing invoices.
 
 ## Local development
 

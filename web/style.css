@@ -1163,6 +1163,16 @@ code {
 .paper-top .right {
   text-align: right;
 }
+.paper-top .eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 9px;
+}
+.paper-top .right small,
+.paper-parties small {
+  display: block;
+  margin-top: 4px;
+}
 .paper-parties h3 {
   font-size: 13px;
 }
@@ -1218,6 +1228,20 @@ code {
   font-size: 11px;
   color: #6b8357;
   margin-bottom: 5px;
+}
+.danger-zone {
+  margin-top: 20px;
+  border-color: #edcfc1;
+}
+.danger-zone h3,
+.danger-zone .text-link {
+  color: #a3483e;
+}
+.danger-zone .form-body {
+  padding-top: 0;
+}
+.danger-zone p {
+  font-size: 11px;
 }
 .preserve {
   white-space: pre-wrap;

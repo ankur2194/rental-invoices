@@ -7,6 +7,7 @@ import {
   periodFor,
   addDays,
   todayIn,
+  financialYearCode,
 } from "./domain.js";
 
 export function tenantContext(db, id) {
@@ -59,14 +60,19 @@ function createInvoiceRecord(
     if (existing) return getInvoice(db, existing.id);
   }
   const prepared = prepareInvoice(db, input);
+  const financialYear = financialYearCode(input.issue_date);
   const sequence = db
     .prepare(
-      `INSERT INTO landlord_invoice_sequences(landlord_id,next_value) VALUES(?,2)
-       ON CONFLICT(landlord_id) DO UPDATE SET next_value=next_value+1
+      `INSERT INTO landlord_invoice_sequences(landlord_id,financial_year,next_value) VALUES(?,?,2)
+       ON CONFLICT(landlord_id,financial_year) DO UPDATE SET next_value=next_value+1
        RETURNING next_value-1 value`,
     )
-    .get(prepared.profile.id).value;
-  const number = `${prepared.profile.prefix}-${input.issue_date.slice(0, 4)}-${String(sequence).padStart(5, "0")}`;
+    .get(prepared.profile.id, financialYear).value;
+  if (sequence > 9999)
+    throw new AppError(
+      `Invoice series ${prepared.profile.prefix}-${financialYear} has reached 9999; use a new prefix`,
+    );
+  const number = `${prepared.profile.prefix}-${financialYear}-${String(sequence).padStart(4, "0")}`;
   const id = Number(
     db
       .prepare(
@@ -113,6 +119,7 @@ function prepareInvoice(db, input) {
     throw new AppError(
       "Each landlord profile must use a unique invoice prefix",
     );
+  validateGstInput(profile, property, tenant, input);
   if (!tenant.active || !property.active)
     throw new AppError("Tenant and property must be active");
   if (input.auto_email && !tenant.email)
@@ -131,10 +138,67 @@ function prepareInvoice(db, input) {
       title: renderTemplate(item.title, context),
       description: renderTemplate(item.description || "", context),
     })),
+    input.tax_mode,
   );
   const notes = renderTemplate(input.notes || "", context);
-  const snapshot = JSON.stringify({ landlord: profile, tenant, property });
+  const snapshot = JSON.stringify({
+    landlord: profile,
+    tenant,
+    property,
+    gst: {
+      document_type: input.document_type,
+      tax_mode: input.tax_mode,
+      reverse_charge: input.reverse_charge,
+      place_of_supply: property.state,
+      place_of_supply_code: property.state_code,
+    },
+  });
   return { tenant, property, profile, calculated, notes, snapshot };
+}
+export function validateGstInput(profile, property, tenant, input) {
+  const gstDocument = input.document_type !== "invoice";
+  if (gstDocument && !profile.gstin)
+    throw new AppError(
+      "Add the landlord GSTIN before issuing a Tax Invoice or Bill of Supply",
+    );
+  if (gstDocument && profile.currency !== "INR")
+    throw new AppError("GST documents in this portal must use INR");
+  if (
+    gstDocument &&
+    (!profile.address ||
+      !profile.state ||
+      !profile.state_code ||
+      !property.state ||
+      !property.state_code ||
+      !tenant.address ||
+      !tenant.state ||
+      !tenant.state_code)
+  )
+    throw new AppError(
+      "Complete supplier, tenant and property address/state details before issuing a GST document",
+    );
+  if (gstDocument && input.items.some((item) => !item.sac_code))
+    throw new AppError("Every GST document item requires a SAC/HSN code");
+  if (input.document_type === "tax_invoice" && input.tax_mode === "none")
+    throw new AppError("Choose CGST + SGST or IGST for a Tax Invoice");
+  if (
+    input.document_type !== "tax_invoice" &&
+    (input.tax_mode !== "none" ||
+      input.items.some((item) => Number(item.gst_rate)))
+  )
+    throw new AppError(
+      "GST can only be charged on a Tax Invoice; use zero rates for other documents",
+    );
+  if (input.document_type === "tax_invoice") {
+    const expectedMode =
+      profile.state_code === property.state_code ? "cgst_sgst" : "igst";
+    if (input.tax_mode !== expectedMode)
+      throw new AppError(
+        expectedMode === "cgst_sgst"
+          ? "Use CGST + SGST when supplier and place of supply have the same state code"
+          : "Use IGST when supplier and place of supply have different state codes",
+      );
+  }
 }
 export function updateInvoice(db, invoiceId, input) {
   return transaction(db, () => {
@@ -144,6 +208,13 @@ export function updateInvoice(db, invoiceId, input) {
     if (invoice.email_jobs.some((job) => job.status === "sending"))
       throw new AppError(
         "Email delivery is in progress. Edit the invoice after it completes.",
+      );
+    if (
+      financialYearCode(input.issue_date) !==
+      financialYearCode(invoice.issue_date)
+    )
+      throw new AppError(
+        "The issue date cannot be moved to another financial year because the invoice number is fixed",
       );
     const prepared = prepareInvoice(db, input);
     if (prepared.profile.id !== invoice.landlord_id)
@@ -181,10 +252,32 @@ export function getInvoice(db, id) {
     )
     .all(id);
   const paid_cents = payments.reduce((total, p) => total + p.amount_cents, 0);
+  const snapshot = JSON.parse(row.snapshot);
+  const items = JSON.parse(row.items);
+  const gst = snapshot.gst || {
+    document_type: "invoice",
+    tax_mode: "none",
+    reverse_charge: false,
+    place_of_supply: snapshot.property?.state || "",
+    place_of_supply_code: snapshot.property?.state_code || "",
+  };
+  const totals = items.reduce(
+    (result, item) => {
+      result.taxable_cents += item.amount_cents || 0;
+      result.cgst_cents += item.cgst_cents || 0;
+      result.sgst_cents += item.sgst_cents || 0;
+      result.igst_cents += item.igst_cents || 0;
+      return result;
+    },
+    { taxable_cents: 0, cgst_cents: 0, sgst_cents: 0, igst_cents: 0 },
+  );
   return {
     ...row,
-    snapshot: JSON.parse(row.snapshot),
-    items: JSON.parse(row.items),
+    snapshot: { ...snapshot, gst },
+    items,
+    ...gst,
+    ...totals,
+    tax_cents: totals.cgst_cents + totals.sgst_cents + totals.igst_cents,
     payments,
     paid_cents,
     balance_cents: row.total_cents - paid_cents,
@@ -296,6 +389,9 @@ export function runSchedules(db, today, landlordId) {
             due_date: addDays(occurrence, rule.due_days),
             ...period,
             items: JSON.parse(rule.items),
+            document_type: rule.document_type,
+            tax_mode: rule.tax_mode,
+            reverse_charge: !!rule.reverse_charge,
             notes: rule.notes,
             auto_email: !!rule.auto_email,
           },

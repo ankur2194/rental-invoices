@@ -12,10 +12,81 @@ const COLORS = {
 };
 const categoryLabel = (value) =>
   value === "Corporation tax" ? "Municipal Property Tax" : value;
+const documentLabel = (value) =>
+  ({
+    tax_invoice: "TAX INVOICE",
+    bill_of_supply: "BILL OF SUPPLY",
+    invoice: "INVOICE",
+  })[value] || "INVOICE";
 const displayDate = (value) => {
   const [year, month, day] = value.split("-");
   return `${day} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(month) - 1]} ${year}`;
 };
+const smallNumbers = [
+  "Zero",
+  "One",
+  "Two",
+  "Three",
+  "Four",
+  "Five",
+  "Six",
+  "Seven",
+  "Eight",
+  "Nine",
+  "Ten",
+  "Eleven",
+  "Twelve",
+  "Thirteen",
+  "Fourteen",
+  "Fifteen",
+  "Sixteen",
+  "Seventeen",
+  "Eighteen",
+  "Nineteen",
+];
+const tens = [
+  "",
+  "",
+  "Twenty",
+  "Thirty",
+  "Forty",
+  "Fifty",
+  "Sixty",
+  "Seventy",
+  "Eighty",
+  "Ninety",
+];
+function underThousand(value) {
+  const words = [];
+  if (value >= 100) {
+    words.push(`${smallNumbers[Math.floor(value / 100)]} Hundred`);
+    value %= 100;
+  }
+  if (value >= 20) {
+    words.push(tens[Math.floor(value / 10)]);
+    value %= 10;
+  }
+  if (value) words.push(smallNumbers[value]);
+  return words.join(" ");
+}
+function amountInWords(cents) {
+  let value = Math.floor(cents / 100);
+  const paise = cents % 100;
+  const parts = [];
+  for (const [divisor, label] of [
+    [10000000, "Crore"],
+    [100000, "Lakh"],
+    [1000, "Thousand"],
+  ]) {
+    if (value >= divisor) {
+      parts.push(`${underThousand(Math.floor(value / divisor))} ${label}`);
+      value %= divisor;
+    }
+  }
+  if (value) parts.push(underThousand(value));
+  const rupees = parts.join(" ") || "Zero";
+  return `Indian Rupees ${rupees}${paise ? ` and ${underThousand(paise)} Paise` : ""} Only`;
+}
 
 /** Shared by browser downloads and email attachments. All layout uses explicit
  * coordinates and measured lines, never PDFKit's mutable text-flow cursor. */
@@ -28,7 +99,7 @@ export function makePdf(invoice) {
       info: {
         Title: invoice.number,
         Author: invoice.snapshot.landlord.name,
-        Subject: "Rental invoice",
+        Subject: documentLabel(invoice.document_type),
       },
     });
     const chunks = [];
@@ -51,8 +122,16 @@ export function makePdf(invoice) {
         bold: existsSync(bold) ? bold : "Helvetica-Bold",
       };
       const { landlord, tenant, property } = invoice.snapshot;
-      const left = 42,
-        right = doc.page.width - 42,
+      const gst = invoice.snapshot.gst || {
+        document_type: invoice.document_type || "invoice",
+        tax_mode: invoice.tax_mode || "none",
+        reverse_charge: !!invoice.reverse_charge,
+        place_of_supply: property.state || "",
+        place_of_supply_code: property.state_code || "",
+      };
+      const title = documentLabel(gst.document_type);
+      const left = 32,
+        right = doc.page.width - 32,
         width = right - left;
       const bottom = doc.page.height - 70;
       let y = 42;
@@ -60,6 +139,10 @@ export function makePdf(invoice) {
         (cents / 100).toLocaleString("en-IN", {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
+        });
+      const rate = (value) =>
+        Number(value || 0).toLocaleString("en-IN", {
+          maximumFractionDigits: 3,
         });
       const style = (size = 9, bold = false, color = COLORS.ink) => ({
         size,
@@ -130,7 +213,7 @@ export function makePdf(invoice) {
       };
       const compactHeader = () => {
         text(
-          invoice.status === "void" ? "VOID INVOICE" : "INVOICE",
+          invoice.status === "void" ? `VOID ${title}` : title,
           left,
           35,
           220,
@@ -168,7 +251,7 @@ export function makePdf(invoice) {
           .flatMap((p) => wrap(p.value, w, p.style || style()));
       // Branded heading and clear payable amount, independent of text length.
       text(
-        invoice.status === "void" ? "VOID INVOICE" : "INVOICE",
+        invoice.status === "void" ? `VOID ${title}` : title,
         left,
         y,
         300,
@@ -217,9 +300,21 @@ export function makePdf(invoice) {
           [
             { value: person.name, style: style(11, true) },
             { value: person.address },
+            {
+              value:
+                person.state &&
+                `${person.state}${person.state_code ? ` (${person.state_code})` : ""}`,
+            },
+            { value: person.gstin && `GSTIN: ${person.gstin}` },
+            { value: person.pan && `PAN: ${person.pan}` },
             { value: person.email },
             { value: person.phone },
-            { value: person.tax_id && `Tax ID / GSTIN: ${person.tax_id}` },
+            {
+              value:
+                !person.gstin && person.tax_id
+                  ? `Legacy tax ID: ${person.tax_id}`
+                  : "",
+            },
           ],
           colWidth,
         );
@@ -231,13 +326,13 @@ export function makePdf(invoice) {
       while (senderIndex < sender.length || recipientIndex < recipient.length) {
         ensure(55);
         label(
-          continued ? "LANDLORD (CONTINUED)" : "FROM / LANDLORD",
+          continued ? "SUPPLIER (CONTINUED)" : "SUPPLIER / LANDLORD",
           left,
           y,
           colWidth,
         );
         label(
-          continued ? "TENANT (CONTINUED)" : "BILL TO / TENANT",
+          continued ? "RECIPIENT (CONTINUED)" : "RECIPIENT / TENANT",
           left + colWidth + 30,
           y,
           colWidth,
@@ -306,23 +401,42 @@ export function makePdf(invoice) {
           style: style(10, true),
         },
         { value: property.address },
+        {
+          value:
+            property.state &&
+            `${property.state}${property.state_code ? ` (${property.state_code})` : ""}`,
+        },
+        {
+          value: `Place of supply: ${gst.place_of_supply || "Not specified"}${gst.place_of_supply_code ? ` (${gst.place_of_supply_code})` : ""}`,
+        },
+        { value: `Reverse charge: ${gst.reverse_charge ? "Yes" : "No"}` },
       ]);
       // Fixed table columns and repeated header on each page of line items.
       const columns = [
-        { x: left, w: width - 284, title: "DESCRIPTION" },
-        { x: right - 284, w: 64, title: "QTY" },
-        { x: right - 220, w: 110, title: `RATE (${landlord.currency})` },
-        { x: right - 110, w: 110, title: `AMOUNT (${landlord.currency})` },
+        { w: 136, title: "DESCRIPTION" },
+        { w: 44, title: "SAC/HSN" },
+        { w: 30, title: "QTY" },
+        { w: 32, title: "UQC" },
+        { w: 55, title: "RATE" },
+        { w: 59, title: "TAXABLE" },
+        { w: 45, title: "GST RATE" },
+        { w: 55, title: "TAX" },
+        { w: 75, title: "TOTAL" },
       ];
+      let columnX = left;
+      for (const column of columns) {
+        column.x = columnX;
+        columnX += column.w;
+      }
       const tableHeader = () => {
         doc.rect(left, y, width, 27).fill(COLORS.green);
         columns.forEach((c, i) =>
           text(
             c.title,
-            c.x + 9,
+            c.x + 3,
             y + 9,
-            c.w - 18,
-            style(8, true, "#ffffff"),
+            c.w - 6,
+            style(6.5, true, "#ffffff"),
             i ? "right" : "left",
           ),
         );
@@ -382,24 +496,41 @@ export function makePdf(invoice) {
           }
           drawLines(lines.slice(indexLine, end), left + 9, columns[0].w - 18);
           if (!continuation) {
+            const taxBreakdown =
+              gst.tax_mode === "cgst_sgst" && item.tax_cents
+                ? `C ${amount(item.cgst_cents)} / S ${amount(item.sgst_cents)}`
+                : gst.tax_mode === "igst" && item.tax_cents
+                  ? `I ${amount(item.igst_cents)}`
+                  : amount(0);
+            const taxRate =
+              gst.tax_mode === "cgst_sgst" && Number(item.gst_rate)
+                ? `C${rate(Number(item.gst_rate) / 2)}%/S${rate(Number(item.gst_rate) / 2)}%`
+                : gst.tax_mode === "igst" && Number(item.gst_rate)
+                  ? `I${rate(item.gst_rate)}%`
+                  : "0%";
             [
+              item.sac_code || "-",
               String(item.quantity),
+              item.unit || "-",
               amount(item.rate_cents),
               amount(item.amount_cents),
+              taxRate,
+              taxBreakdown,
+              amount(item.gross_cents ?? item.amount_cents),
             ].forEach((value, i) => {
               const c = columns[i + 1];
-              let size = 9;
-              apply(style(size, i === 2));
-              while (doc.widthOfString(value) > c.w - 18 && size > 6) {
+              let size = 7.5;
+              apply(style(size, i === 7));
+              while (doc.widthOfString(value) > c.w - 6 && size > 5) {
                 size -= 0.25;
-                apply(style(size, i === 2));
+                apply(style(size, i === 7));
               }
               text(
                 value,
-                c.x + 9,
+                c.x + 3,
                 start + 10,
-                c.w - 18,
-                style(size, i === 2),
+                c.w - 6,
+                style(size, i === 7),
                 "right",
               );
             });
@@ -414,72 +545,84 @@ export function makePdf(invoice) {
           }
         }
       }
-      // Payment instructions share space with the summary on ordinary invoices.
-      // Longer instructions use a flowing full-width section after the totals.
-      const paymentLines = wrap(
-        landlord.payment_details,
-        width - 279,
-        style(8),
-      );
-      const paymentHeight =
-        paymentLines.reduce((sum, line) => sum + line.h, 0) + 20;
-      const inlinePayment =
-        !!landlord.payment_details &&
-        paymentHeight <= 110 &&
-        invoice.status !== "void";
-      const summaryHeight = Math.max(87, inlinePayment ? paymentHeight : 0);
+      const taxableCents =
+        invoice.taxable_cents ??
+        invoice.items.reduce((sum, item) => sum + item.amount_cents, 0);
+      const cgstCents = invoice.cgst_cents || 0;
+      const sgstCents = invoice.sgst_cents || 0;
+      const igstCents = invoice.igst_cents || 0;
+      const summaryRows = [
+        ["Taxable value", taxableCents],
+        ...(gst.tax_mode === "cgst_sgst"
+          ? [
+              ["CGST", cgstCents],
+              ["SGST", sgstCents],
+            ]
+          : []),
+        ...(gst.tax_mode === "igst" ? [["IGST", igstCents]] : []),
+        ["Invoice total", invoice.total_cents],
+        ["Payments received", invoice.paid_cents],
+      ];
+      const summaryHeight = summaryRows.length * 21 + 45;
       y += 16;
       ensure(summaryHeight + 12);
       const totalX = right - 255,
-        totalW = 255,
-        summaryTop = y;
-      if (inlinePayment) {
-        label("PAYMENT DETAILS", left, y, width - 279);
-        y += 20;
-        drawLines(paymentLines, left, width - 279);
-        y = summaryTop;
-      }
-      for (const [offset, title, value] of [
-        [0, "Invoice total", invoice.total_cents],
-        [25, "Payments received", invoice.paid_cents],
-      ]) {
-        text(title, totalX + 12, y + offset, 125, style(9, offset === 0));
+        totalW = 255;
+      summaryRows.forEach(([title, value], index) => {
+        const offset = index * 21;
+        const strong = title === "Invoice total";
+        text(title, totalX + 12, y + offset, 125, style(8.5, strong));
         text(
           `${landlord.currency} ${amount(value)}`,
           totalX + 115,
           y + offset,
           128,
-          style(9, offset === 0),
+          style(8.5, strong),
           "right",
         );
-      }
-      doc.roundedRect(totalX, y + 51, totalW, 36, 4).fill(COLORS.green);
+      });
+      const balanceY = y + summaryRows.length * 21 + 3;
+      doc.roundedRect(totalX, balanceY, totalW, 36, 4).fill(COLORS.green);
       text(
         invoice.status === "void" ? "Balance (void)" : "Balance due",
         totalX + 12,
-        y + 63,
+        balanceY + 12,
         103,
         style(9, true, "#ffffff"),
       );
       text(
         `${landlord.currency} ${amount(invoice.balance_cents)}`,
         totalX + 115,
-        y + 63,
+        balanceY + 12,
         128,
         style(9, true, "#ffffff"),
         "right",
       );
       y += summaryHeight + 18;
+      section("AMOUNT IN WORDS", [
+        { value: amountInWords(invoice.total_cents) },
+      ]);
       if (invoice.status === "void")
         section("VOID INVOICE", [
           {
             value: "This invoice has been cancelled. No payment is requested.",
           },
         ]);
-      if (landlord.payment_details && !inlinePayment)
+      if (landlord.payment_details)
         section("PAYMENT DETAILS", [{ value: landlord.payment_details }]);
       const notes = [invoice.notes, landlord.notes].filter(Boolean).join("\n");
       if (notes) section("NOTES", [{ value: notes }]);
+      ensure(62);
+      label(`FOR ${String(landlord.name).toUpperCase()}`, right - 230, y, 230);
+      text(
+        "Authorised Signatory",
+        right - 230,
+        y + 34,
+        230,
+        style(8, false, COLORS.muted),
+        "right",
+      );
+      y += 62;
       // Footer space is reserved explicitly on every page.
       const { count } = doc.bufferedPageRange();
       for (let page = 0; page < count; page++) {

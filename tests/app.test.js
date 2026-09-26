@@ -61,6 +61,8 @@ async function fixture(t, { mailer = null } = {}) {
       name: "Garden House",
       address: "Tarsali, Vadodara",
       unit: "First floor",
+      state: "Gujarat",
+      state_code: "24",
     })
   ).json();
   const tenant = (
@@ -68,6 +70,9 @@ async function fixture(t, { mailer = null } = {}) {
       name: "Test Tenant",
       property_id: property.id,
       email: "tenant@example.com",
+      address: "Tarsali, Vadodara",
+      state: "Gujarat",
+      state_code: "24",
       rent: "12000",
       lease_start: "2024-01-01",
     })
@@ -85,12 +90,18 @@ async function fixture(t, { mailer = null } = {}) {
         quantity: "1",
         rate: "12000",
         category: "Rent",
+        sac_code: "997212",
+        unit: "NOS",
+        gst_rate: "0",
       },
       {
         title: "Electricity",
         quantity: "50",
         rate: "8.25",
         category: "Electricity",
+        sac_code: "2716",
+        unit: "KWH",
+        gst_rate: "0",
       },
     ],
     notes: "Thank you",
@@ -121,7 +132,7 @@ test("authenticated invoice workflow, snapshot, PDF, partial payments, void and 
   assert.equal(inv.total_cents, 1241250);
   assert.equal(inv.items[0].title, "Rent January 2026");
   assert.equal(inv.email_jobs.length, 0);
-  assert.match(inv.number, /^INV-2026-00001$/);
+  assert.equal(inv.number, "INV-2526-0001");
   await call("/api/profile", "PUT", {
     ...profile,
     name: "Renamed Landlord",
@@ -184,10 +195,111 @@ test("authenticated invoice workflow, snapshot, PDF, partial payments, void and 
   assert.equal(db.prepare("SELECT COUNT(*) n FROM email_jobs").get().n, 0);
 });
 
+test("GST tax invoices include Indian supplier details and split intra-state tax", async (t) => {
+  const { db, call, input } = await fixture(t);
+  const profile = getProfile(db);
+  const savedProfile = await call("/api/profile", "PUT", {
+    ...profile,
+    pan: "ABCDE1234F",
+    gstin: "24ABCDE1234F1Z5",
+    state: "Gujarat",
+    state_code: "24",
+    prefix: "INV-R1",
+  });
+  assert.equal(savedProfile.statusCode, 200, savedProfile.body);
+  const tenant = (await call("/api/tenants")).json()[0];
+  const savedTenant = await call(`/api/tenants/${tenant.id}`, "PUT", {
+    ...tenant,
+    gstin: "24AAAAA0000A1Z5",
+    rent: String(tenant.rent_cents / 100),
+    deposit: String(tenant.deposit_cents / 100),
+    active: !!tenant.active,
+  });
+  assert.equal(savedTenant.statusCode, 200, savedTenant.body);
+  const created = await call("/api/invoices", "POST", {
+    ...input,
+    document_type: "tax_invoice",
+    tax_mode: "cgst_sgst",
+    reverse_charge: false,
+    items: input.items.map((item, index) => ({
+      ...item,
+      gst_rate: index === 0 ? "18" : "0",
+    })),
+  });
+  assert.equal(created.statusCode, 200, created.body);
+  const invoice = created.json();
+  assert.equal(invoice.number, "INV-R1-2526-0001");
+  assert.equal(invoice.taxable_cents, 1241250);
+  assert.equal(invoice.cgst_cents, 108000);
+  assert.equal(invoice.sgst_cents, 108000);
+  assert.equal(invoice.igst_cents, 0);
+  assert.equal(invoice.total_cents, 1457250);
+  assert.equal(invoice.snapshot.landlord.pan, "ABCDE1234F");
+  assert.equal(invoice.snapshot.landlord.gstin, "24ABCDE1234F1Z5");
+  assert.equal(invoice.snapshot.gst.place_of_supply_code, "24");
+});
+
+test("invoice sequence resets for each Indian financial year", async (t) => {
+  const { call, input } = await fixture(t);
+  const january = (await call("/api/invoices", "POST", input)).json();
+  const aprilInput = {
+    ...input,
+    issue_date: "2026-04-01",
+    due_date: "2026-04-07",
+    period_start: "2026-04-01",
+    period_end: "2026-04-30",
+  };
+  const april = (await call("/api/invoices", "POST", aprilInput)).json();
+  const may = (
+    await call("/api/invoices", "POST", {
+      ...aprilInput,
+      issue_date: "2026-05-01",
+      due_date: "2026-05-07",
+      period_start: "2026-05-01",
+      period_end: "2026-05-31",
+    })
+  ).json();
+  assert.equal(january.number, "INV-2526-0001");
+  assert.equal(april.number, "INV-2627-0001");
+  assert.equal(may.number, "INV-2627-0002");
+});
+
+test("landlord invoice reset requires exact confirmation and resets counters", async (t) => {
+  const { db, call, profile, input } = await fixture(t);
+  await call("/api/invoices", "POST", input);
+  await call("/api/invoices", "POST", input);
+  assert.equal(
+    (
+      await call(`/api/profiles/${profile.id}/invoices`, "DELETE", {
+        confirmation: "wrong",
+      })
+    ).statusCode,
+    400,
+  );
+  const reset = await call(`/api/profiles/${profile.id}/invoices`, "DELETE", {
+    confirmation: profile.name,
+  });
+  assert.equal(reset.statusCode, 200, reset.body);
+  assert.equal(reset.json().deleted, 2);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) count FROM invoices").get().count,
+    0,
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) count FROM landlord_invoice_sequences").get()
+      .count,
+    0,
+  );
+  assert.equal(
+    (await call("/api/invoices", "POST", input)).json().number,
+    "INV-2526-0001",
+  );
+});
+
 test("multiple landlord profiles isolate portfolios and invoice identity", async (t) => {
   const { db, call, profile, property, input } = await fixture(t);
   const firstInvoice = (await call("/api/invoices", "POST", input)).json();
-  assert.equal(firstInvoice.number, "INV-2026-00001");
+  assert.equal(firstInvoice.number, "INV-2526-0001");
   const secondProfileInput = {
     name: "Second Landlord",
     email: "second@example.com",
@@ -237,10 +349,10 @@ test("multiple landlord profiles isolate portfolios and invoice identity", async
   assert.equal(invoice.landlord_id, second.id);
   assert.equal(invoice.snapshot.landlord.name, "Second Landlord");
   assert.equal(invoice.snapshot.landlord.currency, "USD");
-  assert.equal(invoice.number, "SECOND-2026-00001");
+  assert.equal(invoice.number, "SECOND-2526-0001");
   assert.equal(
     (await call("/api/invoices", "POST", input)).json().number,
-    "INV-2026-00002",
+    "INV-2526-0002",
   );
   assert.equal(
     (
@@ -250,7 +362,7 @@ test("multiple landlord profiles isolate portfolios and invoice identity", async
         items: [{ ...input.items[0], rate: "1500" }],
       })
     ).json().number,
-    "SECOND-2026-00002",
+    "SECOND-2526-0002",
   );
   assert.equal(
     db.prepare("SELECT landlord_id FROM properties WHERE id=?").get(property.id)
@@ -289,7 +401,7 @@ test("multiple landlord profiles isolate portfolios and invoice identity", async
   );
   assert.equal(
     (await call(`/api/invoices/${firstInvoice.id}`)).json().number,
-    "INV-2026-00001",
+    "INV-2526-0001",
   );
   assert.equal(
     (await call("/api/dashboard?landlord_id=1")).json().properties,
@@ -300,6 +412,12 @@ test("multiple landlord profiles isolate portfolios and invoice identity", async
     1,
   );
   assert.equal((await call("/api/system?landlord_id=2")).statusCode, 200);
+  const reset = await call(`/api/profiles/${profile.id}/invoices`, "DELETE", {
+    confirmation: profile.name,
+  });
+  assert.equal(reset.statusCode, 200, reset.body);
+  assert.equal((await call("/api/invoices?landlord_id=1")).json().total, 0);
+  assert.equal((await call("/api/invoices?landlord_id=2")).json().total, 2);
 });
 
 test("editing an invoice keeps its identity and snapshots current records", async (t) => {
@@ -447,7 +565,7 @@ test("version 1 databases migrate the existing profile and records", (t) => {
     migrated.close();
     rmSync(directory, { recursive: true, force: true });
   });
-  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 5);
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 6);
   assert.equal(getProfile(migrated).name, "Existing Landlord");
   assert.equal(
     migrated.prepare("SELECT landlord_id FROM properties WHERE id=7").get()
@@ -468,7 +586,7 @@ test("version 1 databases migrate the existing profile and records", (t) => {
   );
   assert.equal(
     migrated.prepare("SELECT number FROM invoices WHERE id=9").get().number,
-    "OLD-2025-00001",
+    "OLD-2425-0001",
   );
 });
 
@@ -497,14 +615,14 @@ test("version 2 multi-profile databases remain compatible", (t) => {
     migrated.close();
     rmSync(directory, { recursive: true, force: true });
   });
-  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 5);
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 6);
   const invoice = migrated.prepare("SELECT * FROM invoices WHERE id=9").get();
   assert.equal(invoice.landlord_id, 4);
-  assert.equal(invoice.number, "INV-2026-00001");
+  assert.equal(invoice.number, "INV-2526-0001");
   assert.equal(getProfile(migrated, 5).prefix, "INV-5");
   assert.equal(
     migrated.prepare("SELECT number FROM invoices WHERE id=11").get().number,
-    "INV-5-2026-00001",
+    "INV-5-2526-0001",
   );
   assert.equal(
     migrated
@@ -512,6 +630,51 @@ test("version 2 multi-profile databases remain compatible", (t) => {
       .all()
       .some((column) => column.name === "recreated_from_id"),
     false,
+  );
+});
+
+test("version 5 deployments migrate dotted prefixes and FY counters", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "rentfolio-v5-migration-"));
+  const filename = join(directory, "version-5.sqlite");
+  const seeded = openDatabase(filename);
+  const profile = getProfile(seeded);
+  seeded
+    .prepare("UPDATE landlord_profiles SET data=? WHERE id=1")
+    .run(JSON.stringify({ ...profile, prefix: "INV.R1" }));
+  seeded.exec(`
+    INSERT INTO properties(id,name,address,landlord_id) VALUES(7,'Existing Property','Tarsali',1);
+    INSERT INTO tenants(id,property_id,name) VALUES(8,7,'Existing Tenant');
+    INSERT INTO invoices(id,number,landlord_id,tenant_id,issue_date,due_date,period_start,period_end,snapshot,items,notes,total_cents)
+      VALUES(9,'INV.R1-2026-00001',1,8,'2026-04-01','2026-04-07','2026-04-01','2026-04-30','{"landlord":{"prefix":"INV.R1","currency":"INR"},"tenant":{},"property":{}}','[]','',10000);
+    DROP TABLE landlord_invoice_sequences;
+    CREATE TABLE landlord_invoice_sequences (
+      landlord_id INTEGER PRIMARY KEY REFERENCES landlord_profiles(id),
+      next_value INTEGER NOT NULL CHECK(next_value > 0)
+    );
+    INSERT INTO landlord_invoice_sequences VALUES(1,2);
+    PRAGMA user_version=5;
+  `);
+  seeded.close();
+  const migrated = openDatabase(filename);
+  t.after(() => {
+    migrated.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 6);
+  assert.equal(getProfile(migrated).prefix, "INV-R1");
+  assert.equal(
+    migrated.prepare("SELECT number FROM invoices WHERE id=9").get().number,
+    "INV-R1-2627-0001",
+  );
+  assert.deepEqual(
+    {
+      ...migrated
+        .prepare(
+          "SELECT financial_year,next_value FROM landlord_invoice_sequences WHERE landlord_id=1",
+        )
+        .get(),
+    },
+    { financial_year: "2627", next_value: 2 },
   );
 });
 
@@ -534,7 +697,7 @@ test("version 3 recreation data migrates without deleting invoices", (t) => {
     migrated.close();
     rmSync(directory, { recursive: true, force: true });
   });
-  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 5);
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 6);
   assert.equal(
     migrated
       .prepare("PRAGMA table_info(invoices)")
@@ -548,8 +711,8 @@ test("version 3 recreation data migrates without deleting invoices", (t) => {
       .all()
       .map((row) => ({ ...row })),
     [
-      { number: "INV-2026-00001", status: "void" },
-      { number: "INV-2026-00002", status: "issued" },
+      { number: "INV-2526-0001", status: "void" },
+      { number: "INV-2526-0002", status: "issued" },
     ],
   );
 });

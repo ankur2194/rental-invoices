@@ -16,6 +16,9 @@ const freshItem = () => ({
   category: "Rent",
   quantity: "1",
   rate: "0",
+  sac_code: "",
+  unit: "NOS",
+  gst_rate: "0",
 });
 const currencyOptions = [
   "INR",
@@ -34,12 +37,61 @@ const blankProfile = () => ({
   phone: "",
   address: "",
   tax_id: "",
+  pan: "",
+  gstin: "",
+  state: "",
+  state_code: "",
   payment_details: "",
   notes: "",
   currency: "INR",
   timezone: "Asia/Kolkata",
   prefix: "INV",
 });
+const indianStates = [
+  ["01", "Jammu and Kashmir"],
+  ["02", "Himachal Pradesh"],
+  ["03", "Punjab"],
+  ["04", "Chandigarh"],
+  ["05", "Uttarakhand"],
+  ["06", "Haryana"],
+  ["07", "Delhi"],
+  ["08", "Rajasthan"],
+  ["09", "Uttar Pradesh"],
+  ["10", "Bihar"],
+  ["11", "Sikkim"],
+  ["12", "Arunachal Pradesh"],
+  ["13", "Nagaland"],
+  ["14", "Manipur"],
+  ["15", "Mizoram"],
+  ["16", "Tripura"],
+  ["17", "Meghalaya"],
+  ["18", "Assam"],
+  ["19", "West Bengal"],
+  ["20", "Jharkhand"],
+  ["21", "Odisha"],
+  ["22", "Chhattisgarh"],
+  ["23", "Madhya Pradesh"],
+  ["24", "Gujarat"],
+  ["26", "Dadra and Nagar Haveli and Daman and Diu"],
+  ["27", "Maharashtra"],
+  ["29", "Karnataka"],
+  ["30", "Goa"],
+  ["31", "Lakshadweep"],
+  ["32", "Kerala"],
+  ["33", "Tamil Nadu"],
+  ["34", "Puducherry"],
+  ["35", "Andaman and Nicobar Islands"],
+  ["36", "Telangana"],
+  ["37", "Andhra Pradesh"],
+  ["38", "Ladakh"],
+  ["97", "Other Territory"],
+];
+const documentLabel = (value) =>
+  ({
+    tax_invoice: "TAX INVOICE",
+    bill_of_supply: "BILL OF SUPPLY",
+    invoice: "INVOICE",
+  })[value] || "INVOICE";
 const appPages = new Set([
   "dashboard",
   "invoices",
@@ -162,6 +214,23 @@ function Select({ label, value, onChange, children, wide = false }) {
         {children}
       </select>
     </label>
+  );
+}
+function StateSelect({ value, onChange, wide = false }) {
+  return (
+    <Select
+      label="State / Union Territory"
+      value={value}
+      onChange={onChange}
+      wide={wide}
+    >
+      <option value="">Select state</option>
+      {indianStates.map(([code, name]) => (
+        <option value={code}>
+          {code} - {name}
+        </option>
+      ))}
+    </Select>
   );
 }
 function TextArea({ label, value, onChange, wide = true, ...props }) {
@@ -416,14 +485,27 @@ function InvoiceTable({ items, onOpen, currency }) {
     </div>
   );
 }
-function ItemsEditor({ items, onChange, currency }) {
+function ItemsEditor({ items, onChange, currency, taxMode }) {
   const update = (i, k, v) =>
     onChange(items.map((x, index) => (index === i ? { ...x, [k]: v } : x)));
-  const total = items.reduce(
+  const taxable = items.reduce(
     (sum, i) =>
       sum + Math.round(Number(i.quantity || 0) * Number(i.rate || 0) * 100),
     0,
   );
+  const tax = items.reduce((sum, item) => {
+    if (taxMode === "none") return sum;
+    const amount = Math.round(
+      Number(item.quantity || 0) * Number(item.rate || 0) * 100,
+    );
+    const rate = Number(item.gst_rate || 0);
+    return (
+      sum +
+      (taxMode === "cgst_sgst"
+        ? 2 * Math.round((amount * rate) / 200)
+        : Math.round((amount * rate) / 100))
+    );
+  }, 0);
   return (
     <section class="items-editor wide">
       <div class="section-label">
@@ -469,6 +551,21 @@ function ItemsEditor({ items, onChange, currency }) {
               onInput={(e) => update(i, "description", e.target.value)}
             />
             <Field
+              label="SAC / HSN code"
+              inputMode="numeric"
+              pattern="[0-9]{4,8}"
+              maxLength="8"
+              value={item.sac_code || ""}
+              hint="Required on GST documents. Confirm the correct code with your tax adviser."
+              onInput={(e) => update(i, "sac_code", e.target.value)}
+            />
+            <Field
+              label="Unit / UQC"
+              maxLength="10"
+              value={item.unit || "NOS"}
+              onInput={(e) => update(i, "unit", e.target.value.toUpperCase())}
+            />
+            <Field
               label="Quantity"
               type="number"
               step="0.001"
@@ -487,6 +584,16 @@ function ItemsEditor({ items, onChange, currency }) {
               value={item.rate}
               onInput={(e) => update(i, "rate", e.target.value)}
             />
+            <Field
+              label="GST rate (%)"
+              type="number"
+              min="0"
+              max="100"
+              step="0.001"
+              disabled={taxMode === "none"}
+              value={taxMode === "none" ? "0" : item.gst_rate || "0"}
+              onInput={(e) => update(i, "gst_rate", e.target.value)}
+            />
           </div>
           <button
             type="button"
@@ -500,8 +607,11 @@ function ItemsEditor({ items, onChange, currency }) {
         </div>
       ))}
       <div class="item-total">
-        <span>Invoice total</span>
-        <strong>{money(total, currency)}</strong>
+        <span>
+          Taxable {money(taxable, currency)}
+          {tax > 0 && ` + GST ${money(tax, currency)}`}
+        </span>
+        <strong>{money(taxable + tax, currency)}</strong>
       </div>
       <details>
         <summary>Use dynamic dates and tenant details</summary>
@@ -523,7 +633,15 @@ function ItemsEditor({ items, onChange, currency }) {
 function RecordEditor({ kind, record, properties, onClose, onSave, currency }) {
   const defaults =
     kind === "property"
-      ? { name: "", address: "", unit: "", notes: "", active: true }
+      ? {
+          name: "",
+          address: "",
+          unit: "",
+          state: "",
+          state_code: "",
+          notes: "",
+          active: true,
+        }
       : {
           name: "",
           property_id: properties.find((p) => p.active)?.id || "",
@@ -531,6 +649,9 @@ function RecordEditor({ kind, record, properties, onClose, onSave, currency }) {
           phone: "",
           address: "",
           tax_id: "",
+          gstin: "",
+          state: "",
+          state_code: "",
           rent: "0",
           deposit: "0",
           lease_start: "",
@@ -549,6 +670,10 @@ function RecordEditor({ kind, record, properties, onClose, onSave, currency }) {
       : defaults,
   );
   const set = (k, v) => setData((current) => ({ ...current, [k]: v }));
+  const setState = (code) => {
+    const state = indianStates.find(([value]) => value === code)?.[1] || "";
+    setData((current) => ({ ...current, state, state_code: code }));
+  };
   return (
     <Modal
       title={`${record ? "Edit" : "Add"} ${kind}`}
@@ -583,6 +708,11 @@ function RecordEditor({ kind, record, properties, onClose, onSave, currency }) {
                 required
                 value={data.address}
                 onChange={(v) => set("address", v)}
+              />
+              <StateSelect
+                value={data.state_code || ""}
+                onChange={setState}
+                wide
               />
             </>
           ) : (
@@ -619,10 +749,16 @@ function RecordEditor({ kind, record, properties, onClose, onSave, currency }) {
                 onChange={(v) => set("address", v)}
               />
               <Field
-                label="Tax ID / GSTIN (optional)"
+                label="Tenant GSTIN (optional)"
                 wide
-                value={data.tax_id}
-                onInput={(e) => set("tax_id", e.target.value)}
+                maxLength="15"
+                value={data.gstin || ""}
+                onInput={(e) => set("gstin", e.target.value.toUpperCase())}
+              />
+              <StateSelect
+                value={data.state_code || ""}
+                onChange={setState}
+                wide
               />
               <Field
                 label={`Default rent (${currency})`}
@@ -682,6 +818,12 @@ function BillingEditor({
 }) {
   const today = system.today;
   const first = tenants.find((t) => t.active);
+  const gstModeFor = (tenant) =>
+    profile.state_code &&
+    tenant?.property_state_code &&
+    profile.state_code !== tenant.property_state_code
+      ? "igst"
+      : "cgst_sgst";
   const [data, setData] = useState(
     record
       ? {
@@ -695,6 +837,7 @@ function BillingEditor({
               : record.items,
           active: !!record.active,
           auto_email: !!record.auto_email,
+          reverse_charge: !!record.reverse_charge,
         }
       : {
           tenant_id: first?.id || "",
@@ -708,6 +851,9 @@ function BillingEditor({
               rate: ((first?.rent_cents || 0) / 100).toFixed(2),
             },
           ],
+          document_type: profile.gstin ? "tax_invoice" : "invoice",
+          tax_mode: profile.gstin ? gstModeFor(first) : "none",
+          reverse_charge: false,
           notes: "",
           auto_email: false,
           name: "Monthly rent",
@@ -758,6 +904,9 @@ function BillingEditor({
               setData({
                 ...data,
                 tenant_id: v,
+                ...(data.document_type === "tax_invoice"
+                  ? { tax_mode: gstModeFor(t) }
+                  : {}),
                 items:
                   data.items.length === 1 && data.items[0].category === "Rent"
                     ? [
@@ -779,6 +928,48 @@ function BillingEditor({
                 </option>
               ))}
           </Select>
+          <Select
+            label="GST document type"
+            value={data.document_type || "invoice"}
+            onChange={(v) =>
+              setData({
+                ...data,
+                document_type: v,
+                tax_mode:
+                  v === "tax_invoice"
+                    ? gstModeFor(
+                        tenants.find((t) => t.id === Number(data.tenant_id)),
+                      )
+                    : "none",
+                items:
+                  v === "tax_invoice"
+                    ? data.items
+                    : data.items.map((item) => ({ ...item, gst_rate: "0" })),
+              })
+            }
+          >
+            <option value="invoice">Invoice (not charging GST)</option>
+            <option value="tax_invoice" disabled={!profile.gstin}>
+              Tax Invoice
+            </option>
+            <option value="bill_of_supply" disabled={!profile.gstin}>
+              Bill of Supply
+            </option>
+          </Select>
+          {data.document_type === "tax_invoice" && (
+            <Select
+              label="GST treatment"
+              value={data.tax_mode}
+              onChange={(v) => set("tax_mode", v)}
+            >
+              <option value="cgst_sgst">CGST + SGST (intra-state)</option>
+              <option value="igst">IGST (inter-state)</option>
+            </Select>
+          )}
+          <div class="notice wide">
+            Place of supply comes from the selected property. The portal checks
+            the supplier and property state codes before issuing a Tax Invoice.
+          </div>
           {rule ? (
             <>
               <Field
@@ -874,7 +1065,15 @@ function BillingEditor({
             items={data.items}
             onChange={(v) => set("items", v)}
             currency={profile.currency}
+            taxMode={data.tax_mode || "none"}
           />
+          {data.document_type !== "invoice" && (
+            <Check
+              label="Tax is payable on reverse charge basis"
+              checked={!!data.reverse_charge}
+              onChange={(v) => set("reverse_charge", v)}
+            />
+          )}
           <TextArea
             label="Invoice notes"
             value={data.notes}
@@ -1065,20 +1264,46 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
             <article class="invoice-paper">
               <div class="paper-top">
                 <div>
-                  <h2>{inv.status === "void" ? "VOID INVOICE" : "INVOICE"}</h2>
+                  <h2>
+                    {inv.status === "void"
+                      ? `VOID ${documentLabel(inv.document_type)}`
+                      : documentLabel(inv.document_type)}
+                  </h2>
                   <p class="invoice-number">{inv.number}</p>
                 </div>
                 <div class="right">
+                  <span class="eyebrow">SUPPLIER / LANDLORD</span>
                   <b>{inv.snapshot.landlord.name}</b>
                   <p class="preserve">{inv.snapshot.landlord.address}</p>
+                  {inv.snapshot.landlord.state && (
+                    <small>
+                      {inv.snapshot.landlord.state} (
+                      {inv.snapshot.landlord.state_code})
+                    </small>
+                  )}
+                  {inv.snapshot.landlord.gstin && (
+                    <small>GSTIN: {inv.snapshot.landlord.gstin}</small>
+                  )}
+                  {inv.snapshot.landlord.pan && (
+                    <small>PAN: {inv.snapshot.landlord.pan}</small>
+                  )}
                   <small>{inv.snapshot.landlord.email}</small>
                 </div>
               </div>
               <div class="paper-parties">
                 <div>
-                  <span class="eyebrow">BILL TO</span>
+                  <span class="eyebrow">RECIPIENT / TENANT</span>
                   <h3>{inv.snapshot.tenant.name}</h3>
                   <p class="preserve">{inv.snapshot.tenant.address}</p>
+                  {inv.snapshot.tenant.state && (
+                    <small>
+                      {inv.snapshot.tenant.state} (
+                      {inv.snapshot.tenant.state_code})
+                    </small>
+                  )}
+                  {inv.snapshot.tenant.gstin && (
+                    <small>GSTIN: {inv.snapshot.tenant.gstin}</small>
+                  )}
                   <small>{inv.snapshot.tenant.email}</small>
                 </div>
                 <div>
@@ -1087,6 +1312,12 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                     {inv.snapshot.property.name} {inv.snapshot.property.unit}
                   </h3>
                   <p class="preserve">{inv.snapshot.property.address}</p>
+                  {inv.snapshot.property.state && (
+                    <small>
+                      {inv.snapshot.property.state} (
+                      {inv.snapshot.property.state_code})
+                    </small>
+                  )}
                 </div>
               </div>
               <div class="paper-dates">
@@ -1102,15 +1333,31 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                     {dateLabel(inv.period_start)} – {dateLabel(inv.period_end)}
                   </b>
                 </span>
+                <span>
+                  Place of supply
+                  <b>
+                    {inv.place_of_supply || "—"}
+                    {inv.place_of_supply_code
+                      ? ` (${inv.place_of_supply_code})`
+                      : ""}
+                  </b>
+                </span>
+                <span>
+                  Reverse charge <b>{inv.reverse_charge ? "Yes" : "No"}</b>
+                </span>
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
                       <th>Description</th>
+                      <th>SAC / HSN</th>
                       <th>Qty</th>
+                      <th>UQC</th>
                       <th>Rate</th>
-                      <th>Amount</th>
+                      <th>Taxable</th>
+                      <th>GST</th>
+                      <th>Tax</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1125,13 +1372,28 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
                               : i.category}
                           </small>
                         </td>
+                        <td>{i.sac_code || "—"}</td>
                         <td>{i.quantity}</td>
+                        <td>{i.unit || "—"}</td>
                         <td>
                           {money(i.rate_cents, inv.snapshot.landlord.currency)}
                         </td>
                         <td class="amount">
                           {money(
                             i.amount_cents,
+                            inv.snapshot.landlord.currency,
+                          )}
+                        </td>
+                        <td>
+                          {inv.tax_mode === "cgst_sgst" && Number(i.gst_rate)
+                            ? `CGST ${Number(i.gst_rate) / 2}% + SGST ${Number(i.gst_rate) / 2}%`
+                            : inv.tax_mode === "igst" && Number(i.gst_rate)
+                              ? `IGST ${i.gst_rate}%`
+                              : "0%"}
+                        </td>
+                        <td class="amount">
+                          {money(
+                            i.tax_cents || 0,
                             inv.snapshot.landlord.currency,
                           )}
                         </td>
@@ -1142,7 +1404,37 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
               </div>
               <div class="paper-total">
                 <span>
-                  Total{" "}
+                  Taxable value{" "}
+                  <b>
+                    {money(inv.taxable_cents, inv.snapshot.landlord.currency)}
+                  </b>
+                </span>
+                {inv.cgst_cents > 0 && (
+                  <span>
+                    CGST{" "}
+                    <b>
+                      {money(inv.cgst_cents, inv.snapshot.landlord.currency)}
+                    </b>
+                  </span>
+                )}
+                {inv.sgst_cents > 0 && (
+                  <span>
+                    SGST{" "}
+                    <b>
+                      {money(inv.sgst_cents, inv.snapshot.landlord.currency)}
+                    </b>
+                  </span>
+                )}
+                {inv.igst_cents > 0 && (
+                  <span>
+                    IGST{" "}
+                    <b>
+                      {money(inv.igst_cents, inv.snapshot.landlord.currency)}
+                    </b>
+                  </span>
+                )}
+                <span>
+                  Invoice total{" "}
                   <b>
                     {money(inv.total_cents, inv.snapshot.landlord.currency)}
                   </b>
@@ -1276,9 +1568,18 @@ function InvoiceDetail({ id, onClose, onChange, onEdit, system, notify }) {
     </Modal>
   );
 }
-function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
+function Profile({
+  profile,
+  profiles,
+  onSelect,
+  onSaved,
+  onInvoicesReset,
+  onLogout,
+}) {
   const [data, setData] = useState(profile),
     [creating, setCreating] = useState(false),
+    [resetOpen, setResetOpen] = useState(false),
+    [confirmation, setConfirmation] = useState(""),
     [password, setPassword] = useState({ current: "", password: "" }),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -1331,22 +1632,44 @@ function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
             />
             <TextArea
               label="Address"
+              required
               value={data.address}
               onChange={(v) => set("address", v)}
             />
             <Field
-              label="Tax ID / GSTIN (optional)"
-              value={data.tax_id}
-              onInput={(e) => set("tax_id", e.target.value)}
+              label="PAN (optional)"
+              maxLength="10"
+              pattern="[A-Z]{5}[0-9]{4}[A-Z]"
+              value={data.pan || ""}
+              onInput={(e) => set("pan", e.target.value.toUpperCase())}
+            />
+            <Field
+              label="GSTIN (optional)"
+              maxLength="15"
+              value={data.gstin || ""}
+              onInput={(e) => set("gstin", e.target.value.toUpperCase())}
+            />
+            <StateSelect
+              value={data.state_code || ""}
+              onChange={(code) => {
+                const state =
+                  indianStates.find(([value]) => value === code)?.[1] || "";
+                setData((current) => ({
+                  ...current,
+                  state,
+                  state_code: code,
+                }));
+              }}
+              wide
             />
             <Field
               label="Invoice number prefix"
-              pattern="[A-Z0-9-]{1,12}"
+              pattern="[A-Z0-9/-]{1,6}"
               required
-              maxLength="12"
-              hint="Use a unique prefix for each landlord, for example PATEL or KEY. A historical prefix cannot be reused."
+              maxLength="6"
+              hint="GST-safe example: INV-R1. Prefixes may use letters, numbers, - or /; the final invoice number cannot exceed 16 characters."
               value={data.prefix}
-              onInput={(e) => set("prefix", e.target.value)}
+              onInput={(e) => set("prefix", e.target.value.toUpperCase())}
             />
             <Select
               label="Currency"
@@ -1472,6 +1795,64 @@ function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
             </Button>
           </form>
         </section>
+        <section class="panel danger-zone">
+          <div class="panel-head">
+            <div>
+              <h3>Danger zone</h3>
+              <p>Permanent actions for the selected landlord.</p>
+            </div>
+          </div>
+          <div class="form-body">
+            <p>
+              Delete every invoice, payment and email record for this landlord
+              and restart its invoice counters from 0001. Properties, tenants
+              and recurring schedules are kept.
+            </p>
+            <button
+              type="button"
+              class="text-link danger"
+              onClick={() => {
+                setConfirmation("");
+                setResetOpen(true);
+              }}
+            >
+              Delete all invoices and reset counters
+            </button>
+          </div>
+        </section>
+        {resetOpen && (
+          <Modal
+            title="Delete all invoices?"
+            subtitle="This cannot be undone. Back up the database first."
+            onClose={() => setResetOpen(false)}
+          >
+            <FormShell
+              label="Delete invoices and reset"
+              onClose={() => setResetOpen(false)}
+              onSubmit={async () => {
+                const result = await api(
+                  `/profiles/${profile.id}/invoices`,
+                  "DELETE",
+                  { confirmation },
+                );
+                setResetOpen(false);
+                onInvoicesReset(result.deleted);
+              }}
+            >
+              <p class="muted">
+                Type the exact landlord name <b>{profile.name}</b> to confirm.
+                Active recurring schedules may create future invoices again.
+              </p>
+              <Field
+                label="Landlord profile name"
+                required
+                autoFocus
+                value={confirmation}
+                onInput={(e) => setConfirmation(e.target.value)}
+              />
+            </FormShell>
+          </Modal>
+        )}
         <div class="tip">
           <Icon name="invoices" />
           <h3>Your history stays intact</h3>
@@ -2396,6 +2777,12 @@ function App() {
                 selectProfile(savedId);
                 refresh();
                 notify("Profile updated");
+              }}
+              onInvoicesReset={(deleted) => {
+                refresh();
+                notify(
+                  `${deleted} invoice${deleted === 1 ? "" : "s"} deleted; counters reset`,
+                );
               }}
               onLogout={() => {
                 setAuth(false);
