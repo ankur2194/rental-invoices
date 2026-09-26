@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { financialYearCode } from "./domain.js";
 
 export function openDatabase(
   path = process.env.DB_PATH || "./data/rental.sqlite",
@@ -27,7 +28,7 @@ export function openDatabase(
   return db;
 }
 const defaultProfile =
-  '{"name":"","email":"","phone":"","address":"","tax_id":"","payment_details":"","notes":"","currency":"INR","timezone":"Asia/Kolkata","prefix":"INV"}';
+  '{"name":"","email":"","phone":"","address":"","tax_id":"","pan":"","gstin":"","state":"","state_code":"","payment_details":"","notes":"","currency":"INR","timezone":"Asia/Kolkata","prefix":"INV"}';
 function hasColumn(db, table, column) {
   return db
     .prepare(`PRAGMA table_info(${table})`)
@@ -35,14 +36,20 @@ function hasColumn(db, table, column) {
     .some((c) => c.name === column);
 }
 function availablePrefix(value, profileId, used) {
-  const base = /^[A-Z0-9-]{1,12}$/.test(value || "") ? value : "INV";
+  const cleaned = String(value || "INV")
+    .toUpperCase()
+    .replace(/[^A-Z0-9/-]/g, "-")
+    .slice(0, 6);
+  const base = cleaned || "INV";
   if (!used.has(base)) return base;
-  const suffix = `-${profileId}`;
-  let candidate = `${base.slice(0, Math.max(1, 12 - suffix.length))}${suffix}`;
-  for (let attempt = 2; used.has(candidate); attempt++) {
-    const fallback = `-${profileId}-${attempt}`;
-    candidate = `${base.slice(0, Math.max(1, 12 - fallback.length))}${fallback}`;
-  }
+  const withSuffix = (suffix) =>
+    suffix.length >= 6
+      ? suffix.replace(/[^A-Z0-9]/g, "").slice(-6)
+      : `${base.slice(0, 6 - suffix.length)}${suffix}`;
+  let attempt = 1,
+    candidate = withSuffix(`-${profileId}`);
+  while (used.has(candidate))
+    candidate = withSuffix(`-${profileId + attempt++}`);
   return candidate;
 }
 function migrate(db) {
@@ -103,6 +110,8 @@ function migrate(db) {
   version = db.prepare("PRAGMA user_version").get().user_version;
   if (version < 5)
     transaction(db, () => {
+      if (hasColumn(db, "landlord_invoice_sequences", "financial_year"))
+        db.exec("DROP TABLE landlord_invoice_sequences");
       db.exec(`CREATE TABLE IF NOT EXISTS landlord_invoice_sequences (
         landlord_id INTEGER PRIMARY KEY REFERENCES landlord_profiles(id),
         next_value INTEGER NOT NULL CHECK(next_value > 0)
@@ -149,6 +158,113 @@ function migrate(db) {
         ).run(row.id, invoices.length + 1);
       }
       db.exec("PRAGMA user_version=5");
+    });
+  version = db.prepare("PRAGMA user_version").get().user_version;
+  if (version < 6)
+    transaction(db, () => {
+      if (!hasColumn(db, "properties", "state"))
+        db.exec(
+          "ALTER TABLE properties ADD COLUMN state TEXT NOT NULL DEFAULT ''",
+        );
+      if (!hasColumn(db, "properties", "state_code"))
+        db.exec(
+          "ALTER TABLE properties ADD COLUMN state_code TEXT NOT NULL DEFAULT ''",
+        );
+      if (!hasColumn(db, "tenants", "gstin"))
+        db.exec(
+          "ALTER TABLE tenants ADD COLUMN gstin TEXT NOT NULL DEFAULT ''",
+        );
+      if (!hasColumn(db, "tenants", "state"))
+        db.exec(
+          "ALTER TABLE tenants ADD COLUMN state TEXT NOT NULL DEFAULT ''",
+        );
+      if (!hasColumn(db, "tenants", "state_code"))
+        db.exec(
+          "ALTER TABLE tenants ADD COLUMN state_code TEXT NOT NULL DEFAULT ''",
+        );
+      if (!hasColumn(db, "rules", "document_type"))
+        db.exec(
+          "ALTER TABLE rules ADD COLUMN document_type TEXT NOT NULL DEFAULT 'invoice'",
+        );
+      if (!hasColumn(db, "rules", "tax_mode"))
+        db.exec(
+          "ALTER TABLE rules ADD COLUMN tax_mode TEXT NOT NULL DEFAULT 'none'",
+        );
+      if (!hasColumn(db, "rules", "reverse_charge"))
+        db.exec(
+          "ALTER TABLE rules ADD COLUMN reverse_charge INTEGER NOT NULL DEFAULT 0",
+        );
+
+      db.exec(`ALTER TABLE landlord_invoice_sequences RENAME TO landlord_invoice_sequences_v5;
+        CREATE TABLE landlord_invoice_sequences (
+          landlord_id INTEGER NOT NULL REFERENCES landlord_profiles(id),
+          financial_year TEXT NOT NULL,
+          next_value INTEGER NOT NULL CHECK(next_value > 0),
+          PRIMARY KEY(landlord_id,financial_year)
+        );`);
+
+      const usedPrefixes = new Set();
+      const profiles = db
+        .prepare("SELECT id,data FROM landlord_profiles ORDER BY id")
+        .all();
+      db.prepare("UPDATE invoices SET number=NULL").run();
+      for (const row of profiles) {
+        const profile = JSON.parse(row.data);
+        profile.pan ||= "";
+        profile.gstin ||=
+          /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(
+            profile.tax_id || "",
+          )
+            ? profile.tax_id
+            : "";
+        if (!profile.pan && profile.gstin)
+          profile.pan = profile.gstin.slice(2, 12);
+        profile.state ||= "";
+        profile.state_code ||= profile.gstin ? profile.gstin.slice(0, 2) : "";
+        const prefix = availablePrefix(profile.prefix, row.id, usedPrefixes);
+        usedPrefixes.add(prefix);
+        profile.prefix = prefix;
+        db.prepare("UPDATE landlord_profiles SET data=? WHERE id=?").run(
+          JSON.stringify(profile),
+          row.id,
+        );
+
+        const counters = new Map();
+        const invoices = db
+          .prepare(
+            "SELECT id,issue_date,snapshot FROM invoices WHERE landlord_id=? ORDER BY id",
+          )
+          .all(row.id);
+        for (const invoice of invoices) {
+          const financialYear = financialYearCode(invoice.issue_date);
+          const sequence = (counters.get(financialYear) || 0) + 1;
+          if (sequence > 9999)
+            throw new Error(
+              `Landlord ${row.id} has more than 9999 invoices in FY ${financialYear}`,
+            );
+          counters.set(financialYear, sequence);
+          let snapshot = invoice.snapshot;
+          try {
+            const parsed = JSON.parse(snapshot);
+            if (parsed.landlord) parsed.landlord.prefix = prefix;
+            snapshot = JSON.stringify(parsed);
+          } catch {
+            // Preserve malformed legacy snapshots rather than blocking startup.
+          }
+          const number = `${prefix}-${financialYear}-${String(sequence).padStart(4, "0")}`;
+          db.prepare("UPDATE invoices SET number=?,snapshot=? WHERE id=?").run(
+            number,
+            snapshot,
+            invoice.id,
+          );
+        }
+        for (const [financialYear, sequence] of counters)
+          db.prepare(
+            "INSERT INTO landlord_invoice_sequences(landlord_id,financial_year,next_value) VALUES(?,?,?)",
+          ).run(row.id, financialYear, sequence + 1);
+      }
+      db.exec(`DROP TABLE landlord_invoice_sequences_v5;
+        PRAGMA user_version=6;`);
     });
 }
 export function transaction(db, fn) {

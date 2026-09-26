@@ -29,6 +29,7 @@ import {
   listInvoices,
   queueEmail,
   runSchedules,
+  validateGstInput,
 } from "./billing.js";
 import { makePdf } from "./pdf.js";
 import { createMailer, processEmailJobs } from "./email.js";
@@ -157,6 +158,33 @@ export async function buildApp(options = {}) {
     );
     return getProfile(db, profileId);
   });
+  app.delete("/api/profiles/:id/invoices", async (req) => {
+    const profileId = id(req);
+    const profile = getProfile(db, profileId);
+    if (!profile) throw new AppError("Landlord profile not found", 404);
+    const { confirmation } = z
+      .object({ confirmation: z.string().max(200) })
+      .strict()
+      .parse(req.body);
+    if (confirmation !== profile.name)
+      throw new AppError("Enter the exact landlord profile name to confirm");
+    return transaction(db, () => {
+      const deleted = db
+        .prepare("SELECT COUNT(*) count FROM invoices WHERE landlord_id=?")
+        .get(profileId).count;
+      db.prepare(
+        "DELETE FROM email_jobs WHERE invoice_id IN (SELECT id FROM invoices WHERE landlord_id=?)",
+      ).run(profileId);
+      db.prepare(
+        "DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE landlord_id=?)",
+      ).run(profileId);
+      db.prepare("DELETE FROM invoices WHERE landlord_id=?").run(profileId);
+      db.prepare(
+        "DELETE FROM landlord_invoice_sequences WHERE landlord_id=?",
+      ).run(profileId);
+      return { deleted, counters_reset: true };
+    });
+  });
   // Compatibility aliases for clients deployed before multi-profile support.
   app.get("/api/profile", async () => getProfile(db));
   app.put("/api/profile", async (req) => {
@@ -185,21 +213,32 @@ export async function buildApp(options = {}) {
     if (update) {
       requireRecord("properties", id(req));
       db.prepare(
-        "UPDATE properties SET name=?,address=?,unit=?,notes=?,active=? WHERE id=?",
-      ).run(p.name, p.address, p.unit, p.notes, +p.active, id(req));
+        "UPDATE properties SET name=?,address=?,unit=?,state=?,state_code=?,notes=?,active=? WHERE id=?",
+      ).run(
+        p.name,
+        p.address,
+        p.unit,
+        p.state,
+        p.state_code,
+        p.notes,
+        +p.active,
+        id(req),
+      );
       return { id: id(req) };
     }
     return {
       id: Number(
         db
           .prepare(
-            "INSERT INTO properties(landlord_id,name,address,unit,notes,active) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO properties(landlord_id,name,address,unit,state,state_code,notes,active) VALUES(?,?,?,?,?,?,?,?)",
           )
           .run(
             selectedLandlord(req),
             p.name,
             p.address,
             p.unit,
+            p.state,
+            p.state_code,
             p.notes,
             +p.active,
           ).lastInsertRowid,
@@ -211,7 +250,7 @@ export async function buildApp(options = {}) {
   app.get("/api/tenants", async (req) =>
     db
       .prepare(
-        "SELECT t.*,p.name property_name,p.unit FROM tenants t JOIN properties p ON p.id=t.property_id WHERE p.landlord_id=? ORDER BY t.active DESC,t.name",
+        "SELECT t.*,p.name property_name,p.unit,p.state property_state,p.state_code property_state_code FROM tenants t JOIN properties p ON p.id=t.property_id WHERE p.landlord_id=? ORDER BY t.active DESC,t.name",
       )
       .all(selectedLandlord(req)),
   );
@@ -225,6 +264,9 @@ export async function buildApp(options = {}) {
       t.phone,
       t.address,
       t.tax_id,
+      t.gstin,
+      t.state,
+      t.state_code,
       cents(t.rent),
       cents(t.deposit),
       t.lease_start,
@@ -235,7 +277,7 @@ export async function buildApp(options = {}) {
     if (update) {
       requireRecord("tenants", id(req));
       db.prepare(
-        "UPDATE tenants SET property_id=?,name=?,email=?,phone=?,address=?,tax_id=?,rent_cents=?,deposit_cents=?,lease_start=?,lease_end=?,notes=?,active=? WHERE id=?",
+        "UPDATE tenants SET property_id=?,name=?,email=?,phone=?,address=?,tax_id=?,gstin=?,state=?,state_code=?,rent_cents=?,deposit_cents=?,lease_start=?,lease_end=?,notes=?,active=? WHERE id=?",
       ).run(...args, id(req));
       return { id: id(req) };
     }
@@ -243,7 +285,7 @@ export async function buildApp(options = {}) {
       id: Number(
         db
           .prepare(
-            "INSERT INTO tenants(property_id,name,email,phone,address,tax_id,rent_cents,deposit_cents,lease_start,lease_end,notes,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tenants(property_id,name,email,phone,address,tax_id,gstin,state,state_code,rent_cents,deposit_cents,lease_start,lease_end,notes,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
           )
           .run(...args).lastInsertRowid,
       ),
@@ -355,12 +397,14 @@ export async function buildApp(options = {}) {
   );
   const saveRule = (req, update) => {
     const r = ruleSchema.parse(req.body);
-    const { tenant } = tenantContext(db, r.tenant_id);
+    const { tenant, property } = tenantContext(db, r.tenant_id);
+    const profile = getProfile(db, property.landlord_id);
     if (r.auto_email) {
       requireSmtp();
       if (!tenant.email) throw new AppError("Tenant needs an email address");
     }
-    calculateItems(r.items);
+    calculateItems(r.items, r.tax_mode);
+    validateGstInput(profile, property, tenant, r);
     const ctx = {
       period_start: r.next_date,
       period_end: r.next_date,
@@ -383,6 +427,9 @@ export async function buildApp(options = {}) {
       r.end_date,
       r.due_days,
       JSON.stringify(r.items),
+      r.document_type,
+      r.tax_mode,
+      +r.reverse_charge,
       r.notes,
       +r.auto_email,
       +r.active,
@@ -390,7 +437,7 @@ export async function buildApp(options = {}) {
     if (update) {
       requireRecord("rules", id(req));
       db.prepare(
-        "UPDATE rules SET tenant_id=?,name=?,frequency=?,anchor_date=?,next_date=?,end_date=?,due_days=?,items=?,notes=?,auto_email=?,active=?,last_error='' WHERE id=?",
+        "UPDATE rules SET tenant_id=?,name=?,frequency=?,anchor_date=?,next_date=?,end_date=?,due_days=?,items=?,document_type=?,tax_mode=?,reverse_charge=?,notes=?,auto_email=?,active=?,last_error='' WHERE id=?",
       ).run(...args, id(req));
       return { id: id(req) };
     }
@@ -398,7 +445,7 @@ export async function buildApp(options = {}) {
       id: Number(
         db
           .prepare(
-            "INSERT INTO rules(tenant_id,name,frequency,anchor_date,next_date,end_date,due_days,items,notes,auto_email,active) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO rules(tenant_id,name,frequency,anchor_date,next_date,end_date,due_days,items,document_type,tax_mode,reverse_charge,notes,auto_email,active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
           )
           .run(...args).lastInsertRowid,
       ),
