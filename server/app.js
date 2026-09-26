@@ -104,6 +104,23 @@ export async function buildApp(options = {}) {
     if (!db.prepare(`SELECT id FROM ${table} WHERE id=?`).get(recordId))
       throw new AppError("Record not found", 404);
   };
+  const requireUniquePrefix = (prefix, profileId = 0) => {
+    const usedByProfile =
+      db
+        .prepare(
+          "SELECT id FROM landlord_profiles WHERE id!=? AND json_extract(data,'$.prefix')=? LIMIT 1",
+        )
+        .get(profileId, prefix) ||
+      db
+        .prepare(
+          "SELECT id FROM invoices WHERE landlord_id!=? AND number GLOB ? LIMIT 1",
+        )
+        .get(profileId, `${prefix}-[0-9][0-9][0-9][0-9]-*`);
+    if (usedByProfile)
+      throw new AppError(
+        "Invoice number prefix must be unique for each landlord profile",
+      );
+  };
   const selectedLandlord = (req) => {
     const profileId = z.coerce
       .number()
@@ -120,6 +137,7 @@ export async function buildApp(options = {}) {
   app.get("/api/profiles", async () => listProfiles(db));
   app.post("/api/profiles", async (req) => {
     const profile = profileSchema.parse(req.body);
+    requireUniquePrefix(profile.prefix);
     const profileId = Number(
       db
         .prepare("INSERT INTO landlord_profiles(data) VALUES(?)")
@@ -132,6 +150,7 @@ export async function buildApp(options = {}) {
     if (!getProfile(db, profileId))
       throw new AppError("Landlord profile not found", 404);
     const profile = profileSchema.parse(req.body);
+    requireUniquePrefix(profile.prefix, profileId);
     db.prepare("UPDATE landlord_profiles SET data=? WHERE id=?").run(
       JSON.stringify(profile),
       profileId,
@@ -143,6 +162,7 @@ export async function buildApp(options = {}) {
   app.put("/api/profile", async (req) => {
     const profile = profileSchema.parse(req.body);
     const profileId = getProfile(db).id;
+    requireUniquePrefix(profile.prefix, profileId);
     db.prepare("UPDATE landlord_profiles SET data=? WHERE id=?").run(
       JSON.stringify(profile),
       profileId,
@@ -456,8 +476,22 @@ export async function buildApp(options = {}) {
     };
   });
   const root = resolve("dist");
-  if (existsSync(root))
+  if (existsSync(root)) {
     await app.register(serveStatic, { root, prefix: "/", index: "index.html" });
+    for (const route of [
+      "/dashboard",
+      "/invoices",
+      "/tenants",
+      "/properties",
+      "/automations",
+      "/email",
+      "/profile",
+    ])
+      app.get(route, async (_req, reply) => reply.sendFile("index.html"));
+    app.get("/invoices/:invoiceId", async (_req, reply) =>
+      reply.sendFile("index.html"),
+    );
+  }
   app.setNotFoundHandler((req, reply) =>
     reply.code(404).send({ error: "Not found" }),
   );

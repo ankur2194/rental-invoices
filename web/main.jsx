@@ -40,6 +40,30 @@ const blankProfile = () => ({
   timezone: "Asia/Kolkata",
   prefix: "INV",
 });
+const appPages = new Set([
+  "dashboard",
+  "invoices",
+  "tenants",
+  "properties",
+  "automations",
+  "email",
+  "profile",
+]);
+function readRoute() {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "invoices" && /^\d+$/.test(parts[1] || ""))
+    return {
+      page: "invoices",
+      invoiceId: Number(parts[1]),
+      path: `/invoices/${parts[1]}`,
+    };
+  const page = appPages.has(parts[0]) ? parts[0] : "dashboard";
+  return { page, invoiceId: null, path: `/${page}` };
+}
+function setRoute(path, replace = false) {
+  if (window.location.pathname === path) return;
+  window.history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
 const paths = {
   dashboard: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   invoices: "M6 3h12v18l-3-2-3 2-3-2-3 2z M9 7h6 M9 11h6 M9 15h3",
@@ -1320,6 +1344,7 @@ function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
               pattern="[A-Z0-9-]{1,12}"
               required
               maxLength="12"
+              hint="Use a unique prefix for each landlord, for example PATEL or KEY. A historical prefix cannot be reused."
               value={data.prefix}
               onInput={(e) => set("prefix", e.target.value)}
             />
@@ -1460,8 +1485,9 @@ function Profile({ profile, profiles, onSelect, onSaved, onLogout }) {
   );
 }
 function App() {
+  const initialRoute = useRef(readRoute()).current;
   const [auth, setAuth] = useState(null),
-    [page, setPage] = useState("dashboard"),
+    [page, setPage] = useState(initialRoute.page),
     [mobile, setMobile] = useState(false),
     [profiles, setProfiles] = useState([]),
     [profileId, setProfileId] = useState(null),
@@ -1476,12 +1502,30 @@ function App() {
     [search, setSearch] = useState(""),
     [status, setStatus] = useState(""),
     [pagination, setPagination] = useState(1),
-    [modal, setModal] = useState(null),
+    [modal, setModal] = useState(
+      initialRoute.invoiceId
+        ? { kind: "detail", id: initialRoute.invoiceId }
+        : null,
+    ),
     [error, setError] = useState(""),
     [toast, setToast] = useState(""),
     [loading, setLoading] = useState(false),
     [revision, setRevision] = useState(0);
   const notify = (message) => setToast(message);
+  useEffect(() => {
+    setRoute(initialRoute.path, true);
+    const followHistory = () => {
+      const route = readRoute();
+      setPage(route.page);
+      setModal(
+        route.invoiceId ? { kind: "detail", id: route.invoiceId } : null,
+      );
+      setMobile(false);
+      setError("");
+    };
+    window.addEventListener("popstate", followHistory);
+    return () => window.removeEventListener("popstate", followHistory);
+  }, []);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 4500);
@@ -1590,10 +1634,16 @@ function App() {
   };
   const go = (p) => {
     setPage(p);
+    setModal(null);
+    setRoute(`/${p}`);
     setMobile(false);
     setError("");
   };
-  const openInvoice = (id) => setModal({ kind: "detail", id });
+  const openInvoice = (id) => {
+    setPage("invoices");
+    setModal({ kind: "detail", id });
+    setRoute(`/invoices/${id}`);
+  };
   const createInvoice = () => {
     if (!profile.name) {
       go("profile");
@@ -1632,6 +1682,10 @@ function App() {
       data,
     );
     const wasInvoice = modal.kind === "invoice";
+    if (wasInvoice) {
+      setPage("invoices");
+      setRoute(`/invoices/${result.id}`);
+    }
     setModal(wasInvoice ? { kind: "detail", id: result.id } : null);
     refresh();
     notify("Saved successfully");
@@ -2375,14 +2429,19 @@ function App() {
           tenants={tenants}
           profile={profile}
           system={system}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            if (modal.kind === "invoice" && modal.record) {
+              setModal({ kind: "detail", id: modal.record.id });
+              setRoute(`/invoices/${modal.record.id}`, true);
+            } else setModal(null);
+          }}
           onSave={save}
         />
       )}
       {modal?.kind === "detail" && (
         <InvoiceDetail
           id={modal.id}
-          onClose={() => setModal(null)}
+          onClose={() => go("invoices")}
           onChange={refresh}
           onEdit={(invoice) => setModal({ kind: "invoice", record: invoice })}
           system={system}

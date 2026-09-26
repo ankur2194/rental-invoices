@@ -14,8 +14,9 @@ A small, self-hosted portal for managing one or more landlord identities from a 
 ## Included
 
 - Private administrator login; password change and session revocation.
-- Multiple landlord profiles, each with its own identity, contact details, tax identifier, bank/UPI instructions, currency, invoice prefix and billing time zone.
+- Multiple landlord profiles, each with its own identity, contact details, tax identifier, bank/UPI instructions, currency, unique invoice prefix, independent invoice-number series and billing time zone.
 - A profile switcher that scopes the dashboard, properties, tenants, invoices, recurring billing and email delivery history to the selected landlord.
+- Direct URLs for every main section and invoice detail, so pages can be refreshed, bookmarked and shared between signed-in administrators.
 - Property/unit records assigned to a landlord profile, plus tenant contact details, default rent, deposit and lease dates; edit or archive records.
 - Manual invoices with multiple items: rent, electricity, maintenance, municipal property tax, water and other charges.
 - Weekly, monthly and yearly recurring schedules, pause/resume, end dates, due dates and optional automatic email.
@@ -163,7 +164,7 @@ pm2 save
 
 After changing only `.env`, run `pm2 restart rental-invoices --update-env`. Environment values already exported in the shell or PM2 take precedence over `.env`; avoid conflicting definitions. Preserve the data directory and `.env` during updates.
 
-When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The invoice-editing migration removes the obsolete recreation link only; any original and replacement invoices already created by the previous release remain intact. Tenant, payment, recurring schedule, email, invoice-number and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
+When upgrading, take a backup before stopping the old process. Transactional SQLite migrations run automatically on the first start. A single-profile database keeps its existing landlord as the first profile and assigns existing properties and invoices to it. The invoice-editing migration removes the obsolete recreation link only; any original and replacement invoices already created by the previous release remain intact. The invoice-series migration renumbers existing invoices from `00001` independently for each landlord, in their original creation order, and then continues that landlord's counter. If profiles shared a prefix, the first keeps it and later profiles receive a unique suffix such as `INV-2`. Tenant, payment, recurring schedule, email and historical snapshot data remain unchanged. No manual SQL or new environment variable is required.
 
 To create a consistent backup from the project root:
 
@@ -202,7 +203,7 @@ The queue processes up to five emails per minute. Failures retry with exponentia
 
 ## First-use workflow
 
-1. Complete the migrated/default profile under **Landlord profiles**, or add another profile. Each profile has its own payment instructions, currency, prefix and time zone.
+1. Complete the migrated/default profile under **Landlord profiles**, or add another profile. Each profile has its own payment instructions, currency, unique invoice prefix, invoice-number series and time zone.
 2. Select the landlord in the sidebar, then add a **Property**. New properties belong to the selected profile.
 3. Add a **Tenant** and assign the property. Email can be blank if you only download PDFs.
 4. Use **Create invoice** for a one-off bill, or **Recurring Billing → Create recurring schedule** to set up recurring rent.
@@ -246,9 +247,9 @@ A unique schedule/date key prevents duplicate scheduled invoices, including afte
 
 This is a private multi-landlord administrative portal, not a public multi-company SaaS or tenant login/payment gateway. All administrator accounts can access all landlord profiles. Tenants receive optional PDFs but do not have accounts. Deposits are reference records, not a deposit ledger. Payments are recorded manually; no bank integration or online collection is included.
 
-All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. Categories such as municipal property tax are ordinary user-entered charges; there is no GST computation, statutory tax-return filing, discount engine or automatic utility-meter import. Issued invoices are immutable; void and replace incorrect ones. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger.
+All monetary amounts are stored as integer minor units (two decimal places), with up to three decimal places for quantities and per-item rounding. Categories such as municipal property tax are ordinary user-entered charges; there is no GST computation, statutory tax-return filing, discount engine or automatic utility-meter import. Issued invoices retain snapshots but can be explicitly edited; void invoices cannot be edited. Remove recorded payments before voiding. This is operational recordkeeping, not a tamper-evident accounting ledger.
 
-Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates use the currency of the landlord profile that owns their property, so update those amounts before creating further invoices if you change that profile's currency. Invoice numbers use a global, increasing sequence (not reset annually), such as `INV-2026-00001`. Each profile can have its own prefix; existing invoice numbers stay unchanged when a prefix changes.
+Currency changes apply to future invoices; historical currency totals are kept separate. Default tenant rent and schedule rates use the currency of the landlord profile that owns their property, so update those amounts before creating further invoices if you change that profile's currency. Each landlord has an independent increasing sequence (not reset annually), such as `PATEL-2026-00001`, and every profile must use a unique prefix. A prefix already present in another landlord's historical invoices cannot be reused. Changing a prefix affects future invoice numbers only; the migration to independent series is the one-time exception that renumbers existing invoices.
 
 ## Local development
 

@@ -34,6 +34,17 @@ function hasColumn(db, table, column) {
     .all()
     .some((c) => c.name === column);
 }
+function availablePrefix(value, profileId, used) {
+  const base = /^[A-Z0-9-]{1,12}$/.test(value || "") ? value : "INV";
+  if (!used.has(base)) return base;
+  const suffix = `-${profileId}`;
+  let candidate = `${base.slice(0, Math.max(1, 12 - suffix.length))}${suffix}`;
+  for (let attempt = 2; used.has(candidate); attempt++) {
+    const fallback = `-${profileId}-${attempt}`;
+    candidate = `${base.slice(0, Math.max(1, 12 - fallback.length))}${fallback}`;
+  }
+  return candidate;
+}
 function migrate(db) {
   let version = db.prepare("PRAGMA user_version").get().user_version;
   if (version < 2)
@@ -88,6 +99,56 @@ function migrate(db) {
       if (hasColumn(db, "invoices", "recreated_from_id"))
         db.exec("ALTER TABLE invoices DROP COLUMN recreated_from_id");
       db.exec("PRAGMA user_version=4");
+    });
+  version = db.prepare("PRAGMA user_version").get().user_version;
+  if (version < 5)
+    transaction(db, () => {
+      db.exec(`CREATE TABLE IF NOT EXISTS landlord_invoice_sequences (
+        landlord_id INTEGER PRIMARY KEY REFERENCES landlord_profiles(id),
+        next_value INTEGER NOT NULL CHECK(next_value > 0)
+      )`);
+      const usedPrefixes = new Set();
+      const profiles = db
+        .prepare("SELECT id,data FROM landlord_profiles ORDER BY id")
+        .all();
+      db.prepare("UPDATE invoices SET number=NULL").run();
+      for (const row of profiles) {
+        const profile = JSON.parse(row.data);
+        const prefix = availablePrefix(profile.prefix, row.id, usedPrefixes);
+        usedPrefixes.add(prefix);
+        if (profile.prefix !== prefix) {
+          profile.prefix = prefix;
+          db.prepare("UPDATE landlord_profiles SET data=? WHERE id=?").run(
+            JSON.stringify(profile),
+            row.id,
+          );
+        }
+        const invoices = db
+          .prepare(
+            "SELECT id,issue_date,snapshot FROM invoices WHERE landlord_id=? ORDER BY id",
+          )
+          .all(row.id);
+        invoices.forEach((invoice, index) => {
+          let snapshot = invoice.snapshot;
+          try {
+            const parsed = JSON.parse(snapshot);
+            if (parsed.landlord) parsed.landlord.prefix = prefix;
+            snapshot = JSON.stringify(parsed);
+          } catch {
+            // Preserve malformed legacy snapshots rather than blocking startup.
+          }
+          const number = `${prefix}-${invoice.issue_date.slice(0, 4)}-${String(index + 1).padStart(5, "0")}`;
+          db.prepare("UPDATE invoices SET number=?,snapshot=? WHERE id=?").run(
+            number,
+            snapshot,
+            invoice.id,
+          );
+        });
+        db.prepare(
+          "INSERT OR REPLACE INTO landlord_invoice_sequences(landlord_id,next_value) VALUES(?,?)",
+        ).run(row.id, invoices.length + 1);
+      }
+      db.exec("PRAGMA user_version=5");
     });
 }
 export function transaction(db, fn) {
